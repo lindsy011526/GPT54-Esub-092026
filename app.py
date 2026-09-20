@@ -188,7 +188,7 @@ st.markdown(f"""
         border: 1px solid {CURR_THEME['primary']};
     }}
 </style>
-""", unsafe_allow_html=i18n_support := True)
+""", unsafe_allow_html=i18n_support = True)
 
 # ==========================================
 # 2. SIDEBAR CONTROLS & THEME JACKPOT

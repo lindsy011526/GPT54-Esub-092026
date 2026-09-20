@@ -1,2404 +1,1534 @@
-"""
-Next-Generation 3D WebGL Streamlit Workbench
-Primary entrypoint: app.py
-
-Designed for deployment on Streamlit / Hugging Face Spaces.
-
-Optional packages:
-  streamlit
-  pyyaml
-  pypdf
-  google-genai
-  openai
-  anthropic
-
-The application is intentionally resilient: optional integrations degrade gracefully,
-while the deterministic workspace, editors, artifact lifecycle, and 2D fallbacks
-remain usable without an AI provider.
-"""
-
-from __future__ import annotations
-
-import base64
-import copy
-import hashlib
-import html
+import os
 import io
 import json
-import os
 import re
 import time
-import uuid
-from datetime import datetime, timezone
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
 
+# Optional dependencies. The app remains runnable without them; AI features show
+# a clear configuration message instead of crashing.
+try:
+    import yaml
+except Exception:
+    yaml = None
 
-# =============================================================================
-# App configuration
-# =============================================================================
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
 
-APP_TITLE = "3D WebGL Workbench"
-APP_VERSION = "1.0.0"
+try:
+    from google import genai
+    from google.genai import types
+except Exception:
+    genai = None
+    types = None
 
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
-MODELS = {
-    "gemini-3.1-flash-lite": {
-        "provider": "Gemini",
-        "label": "Gemini 3.1 Flash Lite",
-        "speed": "Fast",
-        "purpose": "General workbench default",
-    },
-    "gemini-3.5-flash-lite": {
-        "provider": "Gemini",
-        "label": "Gemini 3.5 Flash Lite",
-        "speed": "Fast",
-        "purpose": "Longer reasoning / synthesis",
-    },
-    "gemma-4-31b-it": {
-        "provider": "Gemini",
-        "label": "Gemma 4 31B IT",
-        "speed": "Balanced",
-        "purpose": "Instruction-oriented local/provider deployment",
-    },
-    "gemma-4-26b-14b-it": {
-        "provider": "Gemini",
-        "label": "Gemma 4 26B/14B IT",
-        "speed": "Balanced",
-        "purpose": "Efficient structured tasks",
-    },
-}
+# ============================================================
+# 0. PAGE CONFIG
+# ============================================================
+st.set_page_config(
+    page_title="Staged Medical Device Regulatory Review Bench",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-PROVIDERS = {
-    "Gemini": {
-        "env": "GEMINI_API_KEY",
-        "session_key": "gemini_api_key",
-    },
-    "OpenAI": {
-        "env": "OPENAI_API_KEY",
-        "session_key": "openai_api_key",
-    },
-    "Anthropic": {
-        "env": "ANTHROPIC_API_KEY",
-        "session_key": "anthropic_api_key",
-    },
-}
 
-LANGUAGES = {
-    "繁體中文": "zh-TW",
-    "English": "en",
-    "日本語": "ja",
-}
+# ============================================================
+# 1. CONSTANTS / LOCALIZATION / THEMES
+# ============================================================
+APP_TITLE = "Staged Medical Device Regulatory Review Bench"
+APP_VERSION = "2.0.0"
 
-THEMES = {
-    "Light": {
-        "bg": "#F7F8FA",
-        "panel": "#FFFFFF",
-        "text": "#15202B",
-        "muted": "#687386",
-        "accent": "#6C5CE7",
-        "accent2": "#00A6A6",
-        "border": "#DDE2EA",
-        "success": "#178B61",
-        "warning": "#C98200",
-        "danger": "#C24141",
-        "coral": "#FF6F61",
-        "canvas": "#EEF1F7",
+LOCALIZATIONS = {
+    "繁體中文": {
+        "title": "3D WebGL 醫療器材法規智慧審查工作臺",
+        "subtitle": "五階段醫療器材法規審查、FDA 情報、IFU 規格擷取、送件文件對照與最終審查報告",
+        "nav_constellation": "🪐 3D 證據星座",
+        "nav_notes": "📝 AI 筆記本",
+        "nav_bench": "⚖️ 審查工作臺",
+        "nav_skill_studio": "🧪 技能工作室",
+        "nav_pipeline": "🧬 流程工作室",
+        "nav_agents": "🤖 Agent 檔案庫",
+        "nav_wow_ai": "🚀 AI 工具集",
+        "nav_results": "📁 結果檔案庫",
+        "nav_settings": "⚙️ 系統設定",
     },
-    "Dark": {
-        "bg": "#0C1017",
-        "panel": "#131A24",
-        "text": "#EEF3F8",
-        "muted": "#9BA9B9",
-        "accent": "#9A8CFF",
-        "accent2": "#25D0C4",
-        "border": "#273241",
-        "success": "#49C58D",
-        "warning": "#F3B34D",
-        "danger": "#FF7474",
-        "coral": "#FF7B70",
-        "canvas": "#101722",
+    "English": {
+        "title": "3D WebGL Medical Device Regulatory Review Workbench",
+        "subtitle": "Five-stage FDA intelligence, IFU extraction, submission mapping and review-report workflow",
+        "nav_constellation": "🪐 3D Evidence Hub",
+        "nav_notes": "📝 AI Note Keeper",
+        "nav_bench": "⚖️ Review Bench",
+        "nav_skill_studio": "🧪 Skill Studio",
+        "nav_pipeline": "🧬 Pipeline Studio",
+        "nav_agents": "🤖 Agent Studio",
+        "nav_wow_ai": "🚀 AI Utilities",
+        "nav_results": "📁 Results Library",
+        "nav_settings": "⚙️ Settings",
     },
-    "System": {
-        "bg": "#F7F8FA",
-        "panel": "#FFFFFF",
-        "text": "#15202B",
-        "muted": "#687386",
-        "accent": "#6C5CE7",
-        "accent2": "#00A6A6",
-        "border": "#DDE2EA",
-        "success": "#178B61",
-        "warning": "#C98200",
-        "danger": "#C24141",
-        "coral": "#FF6F61",
-        "canvas": "#EEF1F7",
-    },
-    "Jackpot — Aurora": {
-        "bg": "#07131A", "panel": "#0D202A", "text": "#F2FBFF",
-        "muted": "#9FC0C8", "accent": "#4CE1D2", "accent2": "#65B6FF",
-        "border": "#1E3C47", "success": "#5EE6A8", "warning": "#FFD166",
-        "danger": "#FF6B6B", "coral": "#FF7A70", "canvas": "#0B1C24",
-    },
-    "Jackpot — Coral": {
-        "bg": "#1A0B0B", "panel": "#291313", "text": "#FFF7F5",
-        "muted": "#D3A9A4", "accent": "#FF6F61", "accent2": "#FFC2BA",
-        "border": "#4B2321", "success": "#75D69F", "warning": "#F9C74F",
-        "danger": "#FF5252", "coral": "#FF8C7D", "canvas": "#211010",
-    },
-    "Jackpot — Orchid": {
-        "bg": "#120B1B", "panel": "#20132E", "text": "#FCF7FF",
-        "muted": "#C4A8D2", "accent": "#C084FC", "accent2": "#F0ABFC",
-        "border": "#3B2451", "success": "#6EE7B7", "warning": "#FDE68A",
-        "danger": "#FB7185", "coral": "#FB7185", "canvas": "#180F24",
-    },
-    "Jackpot — Ocean": {
-        "bg": "#06131E", "panel": "#0A2231", "text": "#F2FBFF",
-        "muted": "#9DBBC9", "accent": "#38BDF8", "accent2": "#22D3EE",
-        "border": "#18445B", "success": "#4ADE80", "warning": "#FBBF24",
-        "danger": "#FB7185", "coral": "#FB7185", "canvas": "#081B29",
-    },
-    "Jackpot — Mint": {
-        "bg": "#071512", "panel": "#0D231D", "text": "#F2FFF9",
-        "muted": "#9FC8BA", "accent": "#34D399", "accent2": "#5EEAD4",
-        "border": "#1D4639", "success": "#6EE7B7", "warning": "#FACC15",
-        "danger": "#FB7185", "coral": "#FB7185", "canvas": "#091C17",
-    },
-    "Jackpot — Sunset": {
-        "bg": "#1A0E08", "panel": "#2B180F", "text": "#FFF8F0",
-        "muted": "#D2B29B", "accent": "#FB923C", "accent2": "#FACC15",
-        "border": "#51301D", "success": "#86EFAC", "warning": "#FDE047",
-        "danger": "#FB7185", "coral": "#FF8066", "canvas": "#211109",
-    },
-    "Jackpot — Sapphire": {
-        "bg": "#070B1D", "panel": "#10183A", "text": "#F5F7FF",
-        "muted": "#A7B1D6", "accent": "#818CF8", "accent2": "#60A5FA",
-        "border": "#252F62", "success": "#34D399", "warning": "#FBBF24",
-        "danger": "#FB7185", "coral": "#FF7A70", "canvas": "#0B1028",
-    },
-    "Jackpot — Citrus": {
-        "bg": "#111407", "panel": "#1E240B", "text": "#FCFFE9",
-        "muted": "#BFC994", "accent": "#A3E635", "accent2": "#FDE047",
-        "border": "#394619", "success": "#4ADE80", "warning": "#FACC15",
-        "danger": "#FB7185", "coral": "#FF8066", "canvas": "#151A08",
-    },
-    "Jackpot — Rose": {
-        "bg": "#180A12", "panel": "#29111E", "text": "#FFF6FB",
-        "muted": "#D0A7BA", "accent": "#F472B6", "accent2": "#FB7185",
-        "border": "#4A2136", "success": "#6EE7B7", "warning": "#FDE68A",
-        "danger": "#FB7185", "coral": "#FF8066", "canvas": "#210D18",
-    },
-    "Jackpot — Platinum": {
-        "bg": "#111316", "panel": "#1C2025", "text": "#F7F8FA",
-        "muted": "#A8AFB8", "accent": "#D1D5DB", "accent2": "#94A3B8",
-        "border": "#343A43", "success": "#86EFAC", "warning": "#FDE68A",
-        "danger": "#FDA4AF", "coral": "#FF8066", "canvas": "#15181C",
+    "日本語": {
+        "title": "3D WebGL 医療機器規制審査ワークベンチ",
+        "subtitle": "FDA 情報、IFU 仕様抽出、提出資料対応表、審査質問・最終報告を統合",
+        "nav_constellation": "🪐 3D 証拠ハブ",
+        "nav_notes": "📝 AI ノート",
+        "nav_bench": "⚖️ 審査ワークベンチ",
+        "nav_skill_studio": "🧪 スキルスタジオ",
+        "nav_pipeline": "🧬 パイプライン",
+        "nav_agents": "🤖 エージェント",
+        "nav_wow_ai": "🚀 AI ツール",
+        "nav_results": "📁 結果ライブラリ",
+        "nav_settings": "⚙️ 設定",
     },
 }
 
-TEXT = {
-    "zh-TW": {
-        "home": "工作台",
-        "notes": "AI 筆記管家",
-        "review": "法規審查台",
-        "skills": "Skill Studio",
-        "pipeline": "Pipeline Studio",
-        "agents": "Agent Studio",
-        "results": "成果庫",
-        "visuals": "3D 視覺中心",
-        "settings": "設定與安全",
-        "new": "新增",
-        "save": "儲存",
-        "run": "執行",
-        "export": "匯出",
-        "upload": "上傳",
-        "download": "下載",
-        "ready": "就緒",
-        "running": "執行中",
-        "error": "錯誤",
-        "success": "完成",
-        "default": "預設",
-    },
-    "en": {
-        "home": "Workbench",
-        "notes": "AI Note Keeper",
-        "review": "Review Bench",
-        "skills": "Skill Studio",
-        "pipeline": "Pipeline Studio",
-        "agents": "Agent Studio",
-        "results": "Results Library",
-        "visuals": "3D Visualization",
-        "settings": "Settings & Security",
-        "new": "New",
-        "save": "Save",
-        "run": "Run",
-        "export": "Export",
-        "upload": "Upload",
-        "download": "Download",
-        "ready": "Ready",
-        "running": "Running",
-        "error": "Error",
-        "success": "Complete",
-        "default": "Default",
-    },
-    "ja": {
-        "home": "ワークベンチ",
-        "notes": "AI ノートキーパー",
-        "review": "レビュー・ベンチ",
-        "skills": "Skill Studio",
-        "pipeline": "Pipeline Studio",
-        "agents": "Agent Studio",
-        "results": "成果物ライブラリ",
-        "visuals": "3D ビジュアル",
-        "settings": "設定とセキュリティ",
-        "new": "新規",
-        "save": "保存",
-        "run": "実行",
-        "export": "エクスポート",
-        "upload": "アップロード",
-        "download": "ダウンロード",
-        "ready": "準備完了",
-        "running": "実行中",
-        "error": "エラー",
-        "success": "完了",
-        "default": "デフォルト",
-    },
+PANTONE_THEMES = {
+    "Coral Pulse": {"primary": "#FF6F61", "bg": "#171820", "card": "#232633", "text": "#F5F7FA"},
+    "Jade Logic": {"primary": "#00A86B", "bg": "#101A16", "card": "#1B2923", "text": "#EFFAF4"},
+    "Midnight Indigo": {"primary": "#7C5CFC", "bg": "#11101B", "card": "#211E32", "text": "#F2F0FF"},
+    "Warm Sand": {"primary": "#D2B48C", "bg": "#1D1A17", "card": "#2A2520", "text": "#FAF7F1"},
+    "Arctic Glass": {"primary": "#00A6A6", "bg": "#0D1A22", "card": "#182833", "text": "#EFFBFF"},
+    "Ocean Signal": {"primary": "#1885D8", "bg": "#0A1624", "card": "#12263B", "text": "#EEF7FF"},
 }
 
 
-# =============================================================================
-# Utility helpers
-# =============================================================================
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def uid(prefix: str = "asset") -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:10]}"
-
-
-def short_id(value: str) -> str:
-    return value[:12] if value else ""
-
-
-def hash_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()
-
-
-def safe_text(value: Any) -> str:
-    return "" if value is None else str(value)
-
-
-def t(key: str) -> str:
-    lang = st.session_state.get("language", "zh-TW")
-    return TEXT.get(lang, TEXT["zh-TW"]).get(key, key)
-
-
-def theme_tokens() -> Dict[str, str]:
-    name = st.session_state.get("theme", "System")
-    return THEMES.get(name, THEMES["System"])
-
-
-def add_log(message: str, level: str = "INFO", source: str = "system") -> None:
-    event = {
-        "id": uid("evt"),
-        "time": now_iso(),
-        "level": level.upper(),
-        "source": source,
-        "message": message,
-    }
-    st.session_state.setdefault("logs", []).append(event)
-    st.session_state["logs"] = st.session_state["logs"][-250:]
-
-
-def set_flash(message: str, level: str = "success") -> None:
-    st.session_state["flash"] = {"message": message, "level": level}
-
-
-def clear_flash() -> None:
-    st.session_state.pop("flash", None)
-
-
-def provider_key_status(provider: str) -> Dict[str, Any]:
-    cfg = PROVIDERS[provider]
-    env_present = bool(os.getenv(cfg["env"], "").strip())
-    session_present = bool(st.session_state.get(cfg["session_key"], "").strip())
-    return {
-        "environment": env_present,
-        "session": session_present,
-        "configured": env_present or session_present,
-        "source": "environment" if env_present else ("session" if session_present else None),
-    }
-
-
-def get_provider_key(provider: str) -> Optional[str]:
-    cfg = PROVIDERS[provider]
-    env_key = os.getenv(cfg["env"], "").strip()
-    if env_key:
-        return env_key
-    session_key = st.session_state.get(cfg["session_key"], "").strip()
-    return session_key or None
-
-
-def model_provider(model: str) -> str:
-    return MODELS.get(model, {}).get("provider", "Gemini")
-
-
-def artifact_count(kind: Optional[str] = None) -> int:
-    results = st.session_state.get("artifacts", [])
-    if kind is None:
-        return len(results)
-    return sum(1 for item in results if item.get("kind") == kind)
-
-
-# =============================================================================
-# Session state
-# =============================================================================
-
-def default_skill(name: str = "Regulatory Evidence Review") -> Dict[str, Any]:
-    return {
-        "id": uid("skill"),
-        "name": name,
-        "description": "Evidence-first review and structured regulatory analysis.",
-        "version": "1.0.0",
-        "system": (
-            "You are an evidence-first professional reviewer. "
-            "Separate source facts, inferred observations, and unresolved questions. "
-            "Never invent evidence."
-        ),
-        "instructions": (
-            "1. Identify claims.\n"
-            "2. Link each claim to available evidence.\n"
-            "3. Flag contradictions.\n"
-            "4. Produce concise, traceable findings."
-        ),
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
-
-
-def default_pipeline() -> Dict[str, Any]:
-    return {
-        "id": uid("pipe"),
-        "name": "Evidence Review Pipeline",
-        "description": "Parse → extract → compare → review → export",
-        "version": "1.0.0",
-        "nodes": [
-            {"id": "n1", "label": "Input", "type": "input", "status": "idle"},
-            {"id": "n2", "label": "Parse", "type": "parse", "status": "idle"},
-            {"id": "n3", "label": "Extract", "type": "extract", "status": "idle"},
-            {"id": "n4", "label": "Compare", "type": "compare", "status": "idle"},
-            {"id": "n5", "label": "Review", "type": "review", "status": "idle"},
-            {"id": "n6", "label": "Export", "type": "export", "status": "idle"},
-        ],
-        "edges": [
-            ["n1", "n2"],
-            ["n2", "n3"],
-            ["n3", "n4"],
-            ["n4", "n5"],
-            ["n5", "n6"],
-        ],
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
-
-
+# ============================================================
+# 2. SESSION STATE
+# ============================================================
 def init_state() -> None:
     defaults = {
         "initialized": True,
-        "language": "zh-TW",
-        "theme": "Dark",
-        "page": "home",
-        "reduced_motion": False,
-        "dashboard_open": True,
+        "language": "繁體中文",
+        "theme_name": "Coral Pulse",
+        "theme_mode": "Dark",
+        "active_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        "api_key": os.getenv("GEMINI_API_KEY", ""),
+        "token_count": 0,
         "logs": [],
-        "flash": None,
-        "global_model": DEFAULT_MODEL,
-        "module_models": {},
-        "active_provider": "Gemini",
-        "gemini_api_key": "",
-        "openai_api_key": "",
-        "anthropic_api_key": "",
+        "results": [],
         "notes": [],
-        "current_note_id": None,
-        "note_highlights": [],
-        "review": {
-            "case_name": "",
-            "files": [],
-            "claims": [],
-            "conflicts": [],
-            "draft": "",
-            "final": "",
-            "questions": [],
+        "skills": [],
+        "pipelines": [],
+        "agents": [],
+        "bench": {
+            "stage1_description": "",
+            "stage1_result": "",
+            "stage1_sources": [],
+            "stage2_ifu_name": "",
+            "stage2_ifu_text": "",
+            "stage2_result": "",
+            "stage2_specs": [],
+            "stage2_accessories": [],
+            "stage2_software": [],
+            "stage3_doc_list": "",
+            "stage3_result": "",
+            "stage3_docs": [],
+            "stage4_result": "",
+            "stage5_questions": [],
+            "stage5_feedback": "",
+            "stage5_report": "",
         },
-        "skills": [default_skill()],
-        "current_skill_id": None,
-        "comparison": {
-            "input": "",
-            "skill_a": None,
-            "skill_b": None,
-            "skill_c": None,
-            "model_a": DEFAULT_MODEL,
-            "model_b": DEFAULT_MODEL,
-            "model_c": DEFAULT_MODEL,
-            "output_a": "",
-            "output_b": "",
-            "review_c": "",
-            "criteria": "evidence fidelity, completeness, clarity, traceability",
-        },
-        "pipelines": [default_pipeline()],
-        "current_pipeline_id": None,
-        "pipeline_run": {},
-        "agent_yaml": "",
-        "agent_skill_md": "",
-        "agent_validation": [],
-        "artifacts": [],
-        "token_estimate": 0,
-        "run_count": 0,
-        "startup_logged": False,
     }
-
     for key, value in defaults.items():
         if key not in st.session_state:
-            st.session_state[key] = copy.deepcopy(value)
+            st.session_state[key] = value
 
-    if not st.session_state["startup_logged"]:
-        add_log("Workbench initialized.", "INFO", "boot")
-        add_log(f"Default model: {DEFAULT_MODEL}", "INFO", "model")
-        st.session_state["startup_logged"] = True
+    if not st.session_state.logs:
+        log_event("System initialized.")
+        log_event(f"Model: {st.session_state.active_model}")
+        log_event("Five-stage review bench ready.")
 
+    if not st.session_state.skills:
+        st.session_state.skills = [
+            {
+                "id": "SKILL-001",
+                "name": "FDA Regulatory Intelligence",
+                "model": st.session_state.active_model,
+                "description": "Search and synthesize FDA public regulatory evidence.",
+            },
+            {
+                "id": "SKILL-002",
+                "name": "IFU Specification Extractor",
+                "model": st.session_state.active_model,
+                "description": "Extract device, accessory and software specifications from IFU.",
+            },
+            {
+                "id": "SKILL-003",
+                "name": "Submission Document Mapper",
+                "model": st.session_state.active_model,
+                "description": "Normalize a raw submission-document list into a review table.",
+            },
+        ]
 
-# =============================================================================
-# Styling
-# =============================================================================
+    if not st.session_state.pipelines:
+        st.session_state.pipelines = [
+            {
+                "id": "PIPE-001",
+                "name": "Staged Medical Device Regulatory Review",
+                "nodes": [
+                    {"step": 1, "name": "FDA intelligence", "status": "Stage 1"},
+                    {"step": 2, "name": "IFU extraction", "status": "Stage 2"},
+                    {"step": 3, "name": "Document mapping", "status": "Stage 3"},
+                    {"step": 4, "name": "Review guidance", "status": "Stage 4"},
+                    {"step": 5, "name": "Questions and final report", "status": "Stage 5"},
+                ],
+            }
+        ]
 
-def inject_css() -> None:
-    c = theme_tokens()
-    st.markdown(
-        f"""
-        <style>
-        :root {{
-            --wb-bg: {c["bg"]};
-            --wb-panel: {c["panel"]};
-            --wb-text: {c["text"]};
-            --wb-muted: {c["muted"]};
-            --wb-accent: {c["accent"]};
-            --wb-accent2: {c["accent2"]};
-            --wb-border: {c["border"]};
-            --wb-success: {c["success"]};
-            --wb-warning: {c["warning"]};
-            --wb-danger: {c["danger"]};
-            --wb-coral: {c["coral"]};
-            --wb-canvas: {c["canvas"]};
-        }}
-
-        .stApp {{
-            background: var(--wb-bg);
-            color: var(--wb-text);
-        }}
-
-        [data-testid="stHeader"] {{
-            background: transparent;
-        }}
-
-        .wb-hero {{
-            border: 1px solid var(--wb-border);
-            background:
-                radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--wb-accent) 18%, transparent), transparent 32%),
-                radial-gradient(circle at 90% 20%, color-mix(in srgb, var(--wb-accent2) 15%, transparent), transparent 28%),
-                var(--wb-panel);
-            border-radius: 24px;
-            padding: 28px;
-            margin-bottom: 18px;
-            box-shadow: 0 18px 60px rgba(0,0,0,.12);
-        }}
-
-        .wb-title {{
-            font-size: 2.2rem;
-            font-weight: 800;
-            letter-spacing: -0.04em;
-            margin: 0;
-        }}
-
-        .wb-subtitle {{
-            color: var(--wb-muted);
-            margin-top: 6px;
-        }}
-
-        .wb-chip {{
-            display: inline-block;
-            border: 1px solid var(--wb-border);
-            border-radius: 999px;
-            padding: 5px 10px;
-            margin: 3px;
-            color: var(--wb-muted);
-            background: color-mix(in srgb, var(--wb-panel) 88%, transparent);
-            font-size: .78rem;
-        }}
-
-        .wb-card {{
-            border: 1px solid var(--wb-border);
-            border-radius: 18px;
-            padding: 18px;
-            background: var(--wb-panel);
-            min-height: 120px;
-        }}
-
-        .wb-kpi {{
-            font-size: 1.65rem;
-            font-weight: 800;
-        }}
-
-        .wb-muted {{
-            color: var(--wb-muted);
-        }}
-
-        .wb-status {{
-            padding: 8px 12px;
-            border-radius: 999px;
-            display: inline-block;
-            font-size: .8rem;
-            border: 1px solid var(--wb-border);
-        }}
-
-        .wb-floating {{
-            position: fixed;
-            right: 18px;
-            bottom: 18px;
-            width: 360px;
-            max-height: 46vh;
-            overflow: auto;
-            z-index: 9999;
-            padding: 14px;
-            border: 1px solid var(--wb-border);
-            border-radius: 18px;
-            background: color-mix(in srgb, var(--wb-panel) 80%, transparent);
-            backdrop-filter: blur(16px);
-            opacity: .20;
-            transition: opacity .18s ease, transform .18s ease;
-            box-shadow: 0 18px 60px rgba(0,0,0,.22);
-        }}
-
-        .wb-floating:hover {{
-            opacity: .96;
-            transform: translateY(-2px);
-        }}
-
-        .wb-log {{
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            font-size: .72rem;
-            line-height: 1.5;
-            white-space: pre-wrap;
-        }}
-
-        .wb-coral {{
-            color: var(--wb-coral);
-            font-weight: 700;
-        }}
-
-        .wb-section {{
-            margin-top: 18px;
-            margin-bottom: 10px;
-            font-size: 1.25rem;
-            font-weight: 750;
-        }}
-
-        .stButton > button {{
-            border-radius: 12px;
-        }}
-
-        .stDownloadButton > button {{
-            border-radius: 12px;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    if not st.session_state.agents:
+        st.session_state.agents = [
+            {
+                "name": "Regulatory Audit Agent",
+                "role": "Lead Reviewer",
+                "model": st.session_state.active_model,
+                "scope": "Stages 1-5",
+            }
+        ]
 
 
-# =============================================================================
-# Artifact helpers
-# =============================================================================
-
-def save_artifact(kind: str, name: str, content: Any, metadata: Optional[Dict[str, Any]] = None) -> str:
-    artifact = {
-        "id": uid(kind),
-        "kind": kind,
-        "name": name,
-        "created_at": now_iso(),
-        "content": content,
-        "metadata": metadata or {},
-    }
-    st.session_state["artifacts"].insert(0, artifact)
-    st.session_state["artifacts"] = st.session_state["artifacts"][:300]
-    add_log(f"Artifact saved: {name}", "INFO", "artifact")
-    return artifact["id"]
+def log_event(message: str) -> None:
+    stamp = time.strftime("%H:%M:%S")
+    st.session_state.logs.append(f"[{stamp}] {message}")
+    st.session_state.logs = st.session_state.logs[-30:]
 
 
-def artifact_bytes(artifact: Dict[str, Any]) -> bytes:
-    content = artifact.get("content")
-    if isinstance(content, (dict, list)):
-        return json.dumps(content, ensure_ascii=False, indent=2).encode("utf-8")
-    return safe_text(content).encode("utf-8")
+init_state()
+
+L10N = LOCALIZATIONS[st.session_state.language]
+THEME = PANTONE_THEMES[st.session_state.theme_name]
 
 
-def artifact_download(label: str, artifact: Dict[str, Any], filename: str, mime: str = "text/plain") -> None:
-    st.download_button(
-        label,
-        data=artifact_bytes(artifact),
-        file_name=filename,
-        mime=mime,
-        key=f"download_{artifact['id']}",
-    )
+# ============================================================
+# 3. GENERAL HELPERS
+# ============================================================
+def clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
-# =============================================================================
-# AI providers
-# =============================================================================
-
-def heuristic_ai(prompt: str, model: str) -> str:
-    """
-    Deterministic fallback used when no provider is configured.
-    It deliberately labels itself as a local/demo synthesis so the UI never
-    represents fallback output as a live external-model result.
-    """
-    text = prompt.strip()
-    words = re.findall(r"\S+", text)
-    excerpt = " ".join(words[:120])
-    return (
-        f"【本地備援 / Local fallback — {model}】\n\n"
-        "以下結果由工作台的 deterministic fallback 產生，未呼叫外部模型。\n\n"
-        "### 摘要\n"
-        f"{excerpt[:900]}\n\n"
-        "### 可追蹤觀察\n"
-        "- 已保留輸入語意的主要片段。\n"
-        "- 未加入未出現在輸入中的外部事實。\n"
-        "- 建議在設定頁配置模型提供者後重新執行，以取得 AI 生成結果。"
-    )
+def safe_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def call_gemini(prompt: str, model: str, api_key: str) -> str:
-    try:
-        from google import genai  # type: ignore
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=model, contents=prompt)
-        text = getattr(response, "text", None)
-        if text:
-            return text
-        return safe_text(response)
-    except Exception as exc:
-        raise RuntimeError(f"Gemini request failed: {exc}") from exc
-
-
-def call_openai(prompt: str, model: str, api_key: str) -> str:
-    try:
-        from openai import OpenAI  # type: ignore
-        client = OpenAI(api_key=api_key)
-        response = client.responses.create(model=model, input=prompt)
-        text = getattr(response, "output_text", None)
-        if text:
-            return text
-        return safe_text(response)
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI request failed: {exc}") from exc
-
-
-def call_anthropic(prompt: str, model: str, api_key: str) -> str:
-    try:
-        import anthropic  # type: ignore
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=3000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        parts = getattr(response, "content", [])
-        return "\n".join(
-            getattr(part, "text", safe_text(part)) for part in parts
-        )
-    except Exception as exc:
-        raise RuntimeError(f"Anthropic request failed: {exc}") from exc
-
-
-def execute_ai(
-    prompt: str,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    purpose: str = "general",
-) -> str:
-    model = model or st.session_state.get("global_model", DEFAULT_MODEL)
-    provider = provider or model_provider(model)
-    key = get_provider_key(provider)
-
-    st.session_state["run_count"] += 1
-    st.session_state["token_estimate"] += max(1, len(prompt) // 4)
-
-    add_log(
-        f"AI run started: {purpose} / {provider} / {model}",
-        "INFO",
-        "ai",
-    )
-
-    if not key:
-        add_log(
-            f"No key configured for {provider}; deterministic fallback used.",
-            "WARNING",
-            "ai",
-        )
-        return heuristic_ai(prompt, model)
-
-    try:
-        started = time.perf_counter()
-        if provider == "Gemini":
-            result = call_gemini(prompt, model, key)
-        elif provider == "OpenAI":
-            result = call_openai(prompt, model, key)
-        elif provider == "Anthropic":
-            result = call_anthropic(prompt, model, key)
-        else:
-            result = heuristic_ai(prompt, model)
-
-        elapsed = time.perf_counter() - started
-        st.session_state["token_estimate"] += max(1, len(result) // 4)
-        add_log(
-            f"AI run completed in {elapsed:.2f}s: {purpose}",
-            "INFO",
-            "ai",
-        )
-        return result
-    except Exception as exc:
-        add_log(str(exc), "ERROR", "ai")
-        raise
-
-
-# =============================================================================
-# File extraction
-# =============================================================================
-
-def extract_uploaded_file(uploaded) -> Tuple[str, Dict[str, Any]]:
-    name = uploaded.name
-    raw = uploaded.getvalue()
-    metadata = {
-        "filename": name,
-        "bytes": len(raw),
-        "sha256": hashlib.sha256(raw).hexdigest(),
-        "mime": getattr(uploaded, "type", None),
-    }
-
-    lower = name.lower()
-    if lower.endswith((".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml")):
-        try:
-            return raw.decode("utf-8"), metadata
-        except UnicodeDecodeError:
-            return raw.decode("utf-8", errors="replace"), metadata
-
-    if lower.endswith(".pdf"):
-        try:
-            from pypdf import PdfReader  # type: ignore
-            reader = PdfReader(io.BytesIO(raw))
-            pages = []
-            for idx, page in enumerate(reader.pages, start=1):
-                page_text = page.extract_text() or ""
-                pages.append(f"## Page {idx}\n\n{page_text}")
-            metadata["pages"] = len(pages)
-            return "\n\n".join(pages), metadata
-        except Exception as exc:
-            metadata["extraction_error"] = str(exc)
-            return (
-                f"# PDF import\n\nUnable to extract text automatically.\n\n"
-                f"File: {name}\nBytes: {len(raw)}"
-            ), metadata
-
-    return (
-        f"# Imported file\n\nFilename: {name}\n\n"
-        "Binary or unsupported file type. The asset is preserved for downstream handling."
-    ), metadata
-
-
-# =============================================================================
-# WebGL visualizations
-# =============================================================================
-
-def webgl_scene(
-    title: str,
-    nodes: List[Dict[str, Any]],
-    edges: List[Tuple[str, str]],
-    height: int = 470,
-    scene_type: str = "graph",
-) -> None:
-    c = theme_tokens()
-    payload = json.dumps(
+def add_result(title: str, body: str) -> None:
+    st.session_state.results.insert(
+        0,
         {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "title": title,
-            "nodes": nodes,
-            "edges": edges,
-            "scene_type": scene_type,
-            "accent": c["accent"],
-            "accent2": c["accent2"],
-            "coral": c["coral"],
-            "bg": c["canvas"],
+            "body": body,
         },
-        ensure_ascii=False,
+    )
+    st.session_state.results = st.session_state.results[:30]
+
+
+def extract_json_object(text: str) -> Optional[Any]:
+    """Best-effort extraction of JSON from a Gemini response."""
+    if not text:
+        return None
+    candidates = [text.strip()]
+    fenced = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.I | re.S)
+    candidates.extend(fenced)
+    for candidate in candidates:
+        candidate = candidate.strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+        start_obj = candidate.find("{")
+        end_obj = candidate.rfind("}")
+        if start_obj >= 0 and end_obj > start_obj:
+            try:
+                return json.loads(candidate[start_obj : end_obj + 1])
+            except Exception:
+                pass
+        start_arr = candidate.find("[")
+        end_arr = candidate.rfind("]")
+        if start_arr >= 0 and end_arr > start_arr:
+            try:
+                return json.loads(candidate[start_arr : end_arr + 1])
+            except Exception:
+                pass
+    return None
+
+
+def extract_urls(text: str) -> List[str]:
+    urls = re.findall(r"https?://[^\s\]\)<>\"']+", text or "")
+    return list(dict.fromkeys(urls))
+
+
+def get_gemini_client():
+    key = clean_text(st.session_state.api_key)
+    if not key:
+        return None
+    if genai is None:
+        raise RuntimeError(
+            "未安裝 google-genai。請在 requirements.txt 加入 google-genai。"
+        )
+    return genai.Client(api_key=key)
+
+
+def call_gemini(
+    prompt: str,
+    *,
+    system_instruction: str = "",
+    use_web: bool = False,
+    temperature: float = 0.2,
+    max_output_tokens: int = 12000,
+) -> Tuple[str, List[str]]:
+    """
+    Gemini call wrapper.
+    When use_web=True, Gemini is instructed to use Google Search grounding.
+    The exact SDK surface is isolated here so future SDK changes are easy to fix.
+    """
+    client = get_gemini_client()
+    if client is None:
+        raise RuntimeError("尚未設定 GEMINI_API_KEY。請到左側設定 API Key。")
+    if types is None:
+        raise RuntimeError("google-genai 套件版本不完整，請重新安裝 google-genai。")
+
+    tools = []
+    if use_web:
+        try:
+            tools = [types.Tool(google_search=types.GoogleSearch())]
+        except Exception as exc:
+            raise RuntimeError(
+                f"目前 google-genai 版本不支援 Google Search grounding：{exc}"
+            )
+
+    config_kwargs = {
+        "temperature": temperature,
+        "max_output_tokens": max_output_tokens,
+    }
+    if system_instruction:
+        config_kwargs["system_instruction"] = system_instruction
+    if tools:
+        config_kwargs["tools"] = tools
+
+    response = client.models.generate_content(
+        model=st.session_state.active_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(**config_kwargs),
     )
 
-    html_doc = f"""
+    text = getattr(response, "text", "") or ""
+    if not text:
+        raise RuntimeError("模型沒有回傳可讀取的文字結果。")
+
+    # SDK versions differ in how grounding metadata is exposed. URLs in the
+    # generated response are still preserved as a useful fallback.
+    urls = extract_urls(text)
+    try:
+        st.session_state.token_count += int(
+            getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
+        )
+    except Exception:
+        pass
+
+    return text, urls
+
+
+def require_input(value: str, label: str) -> bool:
+    if not clean_text(value):
+        st.warning(f"請先提供：{label}")
+        return False
+    return True
+
+
+def render_markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> None:
+    if not rows:
+        st.info("目前沒有可顯示的資料。")
+        return
+    safe_rows = []
+    for row in rows:
+        safe_rows.append({c: row.get(c, "") for c in columns})
+    st.dataframe(safe_rows, use_container_width=True, hide_index=True)
+
+
+def parse_ifu_file(uploaded_file) -> Tuple[str, str]:
+    """
+    Supports PDF/TXT/MD/DOCX when the corresponding lightweight parser exists.
+    DOCX parsing is done without requiring python-docx at import time.
+    """
+    name = uploaded_file.name
+    data = uploaded_file.getvalue()
+    suffix = name.lower().rsplit(".", 1)[-1] if "." in name else ""
+
+    if suffix == "pdf":
+        if PdfReader is None:
+            raise RuntimeError("PDF 解析需要 pypdf，請在 requirements.txt 加入 pypdf。")
+        reader = PdfReader(io.BytesIO(data))
+        pages = []
+        for page in reader.pages:
+            pages.append(page.extract_text() or "")
+        return name, "\n\n".join(pages)
+
+    if suffix in {"txt", "md", "csv"}:
+        return name, data.decode("utf-8", errors="ignore")
+
+    if suffix == "docx":
+        try:
+            from docx import Document
+        except Exception:
+            raise RuntimeError("DOCX 解析需要 python-docx，請在 requirements.txt 加入 python-docx。")
+        doc = Document(io.BytesIO(data))
+        return name, "\n".join(p.text for p in doc.paragraphs)
+
+    raise RuntimeError("目前支援 PDF、TXT、MD、CSV、DOCX。")
+
+
+def stage_badge(stage_num: int, label: str, done: bool = False) -> str:
+    state = "完成" if done else "待執行"
+    return (
+        f"<div style='padding:10px 12px;border-radius:10px;"
+        f"border:1px solid {THEME['primary']};margin-bottom:8px;'>"
+        f"<b>Stage {stage_num}</b> · {label}<br>"
+        f"<span style='opacity:.8'>{state}</span></div>"
+    )
+
+
+# ============================================================
+# 4. PROMPTS — CENTRALIZED AND VERSIONED
+# ============================================================
+SYSTEM_REVIEW = """
+你是醫療器材法規文件審查 AI 助理。你的工作是協助專業審查人員整理、比對與研究公開法規資料。
+你不是主管機關，也不能取代正式法規判定。不得捏造法規、FDA 文件編號、產品代碼、510(k) 編號、
+標準版本、核准狀態或試驗結果。若證據不足，明確寫「資料不足／需人工確認」。
+所有時間敏感或法規相關結論應以可追溯來源支持。對於使用者提供的文件，必須區分「文件明載」
+與「AI 推論／待確認事項」。輸出使用繁體中文。
+"""
+
+STAGE1_PROMPT = """
+任務：建立「Stage 1 — FDA Regulatory Intelligence Memo」，目標約 4,500 個中文字。
+使用者提供的是醫療器材描述。請使用 Google Search grounding 搜尋 FDA 官方及其他高可信公開來源。
+
+研究優先順序：
+1. FDA 510(k) database / 510(k) Summary；
+2. FDA product classification、Product Classification、regulation number、product code；
+3. FDA guidance、special controls、recognized consensus standards（僅在與裝置直接相關時）；
+4. FDA recall / safety communication / labeling / public device information；
+5. 必要時引用其他權威公開來源，但清楚標示來源性質。
+
+請產生以下章節：
+# FDA Regulatory Intelligence Memo
+## 1. Executive Summary
+## 2. Device identity and intended use signals
+## 3. FDA classification / regulation / product code evidence
+## 4. 510(k) landscape and potentially relevant predicates
+## 5. Relevant FDA guidance and standards
+## 6. Safety / labeling / software / cybersecurity considerations
+## 7. Key regulatory risks and information gaps
+## 8. Recommended evidence to verify
+## 9. Source register
+
+對 predicate 的描述只能是「可能相關候選」，不得在沒有足夠證據時宣稱 substantial equivalence。
+每一個重要外部事實盡量提供來源名稱、頁面標題、URL 或 FDA database 查詢線索。
+若搜尋結果互相衝突，列出衝突並要求人工核對。
+"""
+
+STAGE2_PROMPT = """
+任務：從使用者上傳的 IFU（Instructions for Use）中建立結構化裝置規格摘要。
+只能根據 IFU 內容；如果 IFU 沒有資料，填「IFU 未載明」，不要自行補值。
+
+輸出 JSON，格式必須是：
+{
+  "device_summary": "繁體中文摘要",
+  "specs": [
+    {"title":"", "spec":"", "comments":""}
+  ],
+  "accessories": [
+    {"title":"", "spec":"", "comments":""}
+  ],
+  "software": [
+    {"title":"", "brief_spec":"", "ai_related":"是/否/不明", "comments":""}
+  ],
+  "safety_and_labeling_notes": [],
+  "source_notes": []
+}
+
+specs 應涵蓋 IFU 中的重要主機、硬體、尺寸、電源、操作範圍、性能、適用部位、
+環境條件、滅菌/清潔、使用限制等。
+accessories 應包含探頭、探針、線材、套件、腳踏、支架等 IFU 明載附件。
+software 應列出主要軟體功能；若有 AI、machine learning、deep learning、segmentation、
+registration、classification、detection 等字樣，ai_related 應依 IFU 證據判定；沒有明確證據則「不明」。
+"""
+
+STAGE3_PROMPT = """
+任務：把使用者貼上的「送件文件清單」重新整理成適合醫療器材審查的對照總表。
+不得創造原始清單中不存在的文件名稱；若可合理判斷分類，分類應以文件本身與一般審查結構為依據，
+但任何推論分類請在 comments 標示「AI 分類，待確認」。
+
+輸出 JSON：
+{
+  "documents": [
+    {
+      "title": "文件角色/主題",
+      "category": "文件類別",
+      "doc_name": "原始文件名稱",
+      "comments": "審查備註"
+    }
+  ],
+  "gaps": [],
+  "normalization_notes": []
+}
+
+分類可使用：行政/申請、裝置描述、原理與規格、風險管理、性能/bench testing、
+電氣安全/EMC、生物相容性、軟體/AI、臨床、標示/IFU、滅菌/清潔、製造/品質、
+上市後/其他；若不適用可建立更合適分類。
+"""
+
+STAGE4_PROMPT = """
+任務：根據 Stage 1 FDA Regulatory Intelligence Memo、Stage 2 IFU specification summary、
+Stage 3 submission-document mapping，建立「Stage 4 — Comprehensive Review Guidance」。
+
+同時研究並納入台灣公開法規資料，尤其是「醫療器材許可證核發與登錄及年度申報準則」。
+請優先搜尋台灣衛生福利部食品藥物管理署（TFDA）及全國法規資料庫等官方來源。
+若法規名稱、條文或現行版本無法確認，必須標示「需人工確認」，不得猜測。
+
+輸出繁體中文 Markdown，至少包含：
+# 綜合審查指引
+## A. Review scope and evidence boundary
+## B. Stage 1–3 integrated findings
+## C. Required document review matrix
+表格欄位至少：Required Document / 對應 Stage 證據 / 10 Key Review Points / Review Evidence / Gap / Action
+其中「10 Key Review Points」要有恰好 10 個明確審查點，涵蓋：
+1 intended use
+2 indications / contraindications
+3 classification and regulatory pathway
+4 device specifications
+5 accessories
+6 software / AI
+7 performance and safety
+8 labeling / IFU consistency
+9 risk management / post-market considerations
+10 Taiwan submission and annual-reporting obligations
+## D. Cross-document consistency checks
+## E. High-priority gaps
+## F. Reviewer workflow
+## G. Taiwan regulatory references
+## H. Source register
+
+不要把 AI 產生的「建議」寫成主管機關正式要求。
+"""
+
+STAGE5_PROMPT = """
+任務：根據 Stage 1–4 的結果建立「30 題綜合醫療器材法規審查問題與答案」。
+所有問題都必須能追溯到 Stage 1–4 的證據或明確的法規查詢事項。
+答案使用繁體中文，若資料不足要明確回答「資料不足／需補件或人工確認」，不要猜。
+
+輸出 JSON：
+{
+  "questions": [
+    {
+      "id": 1,
+      "category": "",
+      "question": "",
+      "answer": "",
+      "evidence": "",
+      "reviewer_focus": ""
+    }
+  ]
+}
+必須恰好 30 題，涵蓋 FDA intelligence、device specs、accessories、software/AI、
+submission documents、Taiwan requirements、labeling、risk/performance、cross-document consistency。
+"""
+
+FINAL_REPORT_PROMPT = """
+任務：撰寫「醫療器材法規綜合審查報告」，約 5,000–6,000 個中文字。
+根據 Stage 1–5 所有材料及使用者對 30 題問題的回饋。
+不要把 AI 意見寫成主管機關正式決定。所有重大缺口要標示證據來源或「待確認」。
+
+請使用繁體中文 Markdown，至少包含：
+# 醫療器材法規綜合審查報告
+## 1. 審查目的與範圍
+## 2. 裝置識別與用途
+## 3. FDA Regulatory Intelligence
+## 4. IFU 與裝置規格審查
+## 5. 附件與耗材審查
+## 6. 軟體與 AI 功能審查
+## 7. 送件文件完整性與一致性
+## 8. 台灣法規與「醫療器材許可證核發與登錄及年度申報準則」相關檢核
+## 9. 風險、性能、安全與標示審查
+## 10. 30 題問答與 reviewer feedback 影響
+## 11. 主要缺口與待補資料
+## 12. 建議的後續審查工作
+## 13. Evidence / source register
+## 14. Limitations and human-review points
+
+不得自行創造測試結果、法規條文、FDA 核准狀態、產品代碼或申請號碼。
+"""
+
+
+# ============================================================
+# 5. STAGE FUNCTIONS
+# ============================================================
+def run_stage1() -> None:
+    description = st.session_state.bench["stage1_description"]
+    if not require_input(description, "裝置描述"):
+        return
+
+    prompt = STAGE1_PROMPT + "\n\nUSER DEVICE DESCRIPTION:\n" + description
+    with st.spinner("正在進行 FDA 公開資料搜尋與法規情報整理…"):
+        result, urls = call_gemini(
+            prompt,
+            system_instruction=SYSTEM_REVIEW,
+            use_web=True,
+            temperature=0.15,
+            max_output_tokens=16000,
+        )
+
+    st.session_state.bench["stage1_result"] = result
+    st.session_state.bench["stage1_sources"] = urls
+    add_result("Stage 1 — FDA Regulatory Intelligence Memo", result)
+    log_event("Stage 1 completed with web-grounded research.")
+    st.success("Stage 1 完成。")
+
+
+def run_stage2() -> None:
+    text = st.session_state.bench["stage2_ifu_text"]
+    if not require_input(text, "IFU 內容"):
+        return
+
+    # Avoid accidental context explosions. Keep enough text for long IFUs while
+    # clearly warning the reviewer when truncation occurs.
+    max_chars = 120_000
+    truncated = len(text) > max_chars
+    source_text = text[:max_chars]
+    if truncated:
+        source_text += "\n\n[注意：IFU 超過模型輸入保護上限，後段文字未送入模型。]"
+
+    prompt = STAGE2_PROMPT + f"\n\nIFU FILE: {st.session_state.bench['stage2_ifu_name']}\n\nIFU TEXT:\n{source_text}"
+    with st.spinner("正在解析 IFU 並建立裝置、附件與軟體規格表…"):
+        raw, _ = call_gemini(
+            prompt,
+            system_instruction=SYSTEM_REVIEW,
+            use_web=False,
+            temperature=0.1,
+            max_output_tokens=12000,
+        )
+
+    parsed = extract_json_object(raw)
+    if not isinstance(parsed, dict):
+        # Preserve raw output so the reviewer can inspect it rather than losing it.
+        parsed = {
+            "device_summary": raw,
+            "specs": [],
+            "accessories": [],
+            "software": [],
+            "safety_and_labeling_notes": [],
+            "source_notes": ["模型沒有回傳可解析 JSON；以上為原始模型輸出。"],
+        }
+
+    b = st.session_state.bench
+    b["stage2_result"] = safe_json(parsed)
+    b["stage2_specs"] = parsed.get("specs", []) or []
+    b["stage2_accessories"] = parsed.get("accessories", []) or []
+    b["stage2_software"] = parsed.get("software", []) or []
+
+    add_result("Stage 2 — IFU Specification Summary", b["stage2_result"])
+    log_event(f"Stage 2 completed: {st.session_state.bench['stage2_ifu_name']}")
+    if truncated:
+        st.warning("IFU 太長，已套用輸入長度保護；請考慮分段處理或提高模型輸入上限。")
+    st.success("Stage 2 完成。")
+
+
+def run_stage3() -> None:
+    doc_list = st.session_state.bench["stage3_doc_list"]
+    if not require_input(doc_list, "送件文件清單"):
+        return
+
+    prompt = STAGE3_PROMPT + "\n\nRAW SUBMISSION DOCUMENT LIST:\n" + doc_list
+    with st.spinner("正在整理送件文件並建立對照總表…"):
+        raw, _ = call_gemini(
+            prompt,
+            system_instruction=SYSTEM_REVIEW,
+            use_web=False,
+            temperature=0.1,
+            max_output_tokens=10000,
+        )
+
+    parsed = extract_json_object(raw)
+    if not isinstance(parsed, dict):
+        parsed = {
+            "documents": [],
+            "gaps": [],
+            "normalization_notes": ["模型沒有回傳可解析 JSON。原始輸出已保留。"],
+            "raw_output": raw,
+        }
+
+    st.session_state.bench["stage3_result"] = safe_json(parsed)
+    st.session_state.bench["stage3_docs"] = parsed.get("documents", []) or []
+    add_result("Stage 3 — Submission Document Mapping", st.session_state.bench["stage3_result"])
+    log_event("Stage 3 completed.")
+    st.success("Stage 3 完成。")
+
+
+def build_stage_context() -> str:
+    b = st.session_state.bench
+    return f"""
+=== STAGE 1 ===
+{b['stage1_result']}
+
+=== STAGE 2 ===
+{b['stage2_result']}
+
+=== STAGE 3 ===
+{b['stage3_result']}
+"""
+
+
+def run_stage4() -> None:
+    if not require_input(st.session_state.bench["stage1_result"], "Stage 1 結果"):
+        return
+    if not require_input(st.session_state.bench["stage2_result"], "Stage 2 結果"):
+        return
+    if not require_input(st.session_state.bench["stage3_result"], "Stage 3 結果"):
+        return
+
+    prompt = STAGE4_PROMPT + "\n\n" + build_stage_context()
+    with st.spinner("正在研究 FDA / TFDA 公開法規資料並建立綜合審查指引…"):
+        result, urls = call_gemini(
+            prompt,
+            system_instruction=SYSTEM_REVIEW,
+            use_web=True,
+            temperature=0.15,
+            max_output_tokens=18000,
+        )
+
+    if urls:
+        result += "\n\n## Web sources detected by model\n" + "\n".join(f"- {u}" for u in urls)
+
+    st.session_state.bench["stage4_result"] = result
+    add_result("Stage 4 — Comprehensive Review Guidance", result)
+    log_event("Stage 4 completed with FDA/TFDA web research.")
+    st.success("Stage 4 完成。")
+
+
+def run_stage5_questions() -> None:
+    b = st.session_state.bench
+    for label, key in [
+        ("Stage 1", "stage1_result"),
+        ("Stage 2", "stage2_result"),
+        ("Stage 3", "stage3_result"),
+        ("Stage 4", "stage4_result"),
+    ]:
+        if not require_input(b[key], label):
+            return
+
+    prompt = STAGE5_PROMPT + "\n\n=== STAGE 1–4 CONTEXT ===\n" + (
+        f"\nSTAGE 1:\n{b['stage1_result']}\n"
+        f"\nSTAGE 2:\n{b['stage2_result']}\n"
+        f"\nSTAGE 3:\n{b['stage3_result']}\n"
+        f"\nSTAGE 4:\n{b['stage4_result']}\n"
+    )
+
+    with st.spinner("正在建立 30 題綜合審查問題與答案…"):
+        raw, _ = call_gemini(
+            prompt,
+            system_instruction=SYSTEM_REVIEW,
+            use_web=False,
+            temperature=0.1,
+            max_output_tokens=18000,
+        )
+
+    parsed = extract_json_object(raw)
+    questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
+    if len(questions) != 30:
+        st.warning(f"模型目前回傳 {len(questions)} 題；系統會保留原始結果，請檢查後再產生報告。")
+    b["stage5_questions"] = questions if questions else [{"id": 0, "category": "Raw", "question": "模型原始輸出", "answer": raw, "evidence": "", "reviewer_focus": ""}]
+    log_event(f"Stage 5 generated {len(b['stage5_questions'])} questions.")
+    st.success("30 題審查問答產生完成。")
+
+
+def run_final_report() -> None:
+    b = st.session_state.bench
+    if not b["stage5_questions"]:
+        st.warning("請先產生 Stage 5 的 30 題問題與答案。")
+        return
+
+    feedback = b["stage5_feedback"].strip() or "Reviewer 未提供額外 feedback。"
+    prompt = (
+        FINAL_REPORT_PROMPT
+        + "\n\n=== STAGE 1 ===\n" + b["stage1_result"]
+        + "\n\n=== STAGE 2 ===\n" + b["stage2_result"]
+        + "\n\n=== STAGE 3 ===\n" + b["stage3_result"]
+        + "\n\n=== STAGE 4 ===\n" + b["stage4_result"]
+        + "\n\n=== STAGE 5 QUESTIONS ===\n" + safe_json(b["stage5_questions"])
+        + "\n\n=== REVIEWER FEEDBACK ===\n" + feedback
+    )
+
+    with st.spinner("正在撰寫 5,000–6,000 字繁體中文綜合審查報告…"):
+        result, _ = call_gemini(
+            prompt,
+            system_instruction=SYSTEM_REVIEW,
+            use_web=False,
+            temperature=0.15,
+            max_output_tokens=24000,
+        )
+
+    b["stage5_report"] = result
+    add_result("Stage 5 — Comprehensive Review Report", result)
+    log_event("Final review report completed.")
+    st.success("最終審查報告完成。")
+
+
+# ============================================================
+# 6. CSS / SIDEBAR
+# ============================================================
+mode_bg = THEME["bg"] if st.session_state.theme_mode == "Dark" else "#F7F8FA"
+mode_text = THEME["text"] if st.session_state.theme_mode == "Dark" else "#1B1F24"
+card_bg = THEME["card"] if st.session_state.theme_mode == "Dark" else "#FFFFFF"
+
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background: {mode_bg};
+        color: {mode_text};
+    }}
+    [data-testid="stSidebar"] {{
+        background: {card_bg};
+    }}
+    .review-card {{
+        border: 1px solid {THEME['primary']};
+        border-radius: 12px;
+        padding: 14px;
+        margin: 8px 0;
+        background: rgba(255,255,255,.03);
+    }}
+    .stage-title {{
+        color: {THEME['primary']};
+        font-weight: 800;
+        font-size: 1.1rem;
+    }}
+    .small-muted {{
+        opacity: .72;
+        font-size: .85rem;
+    }}
+    .stButton > button {{
+        border-radius: 8px;
+        border: 1px solid {THEME['primary']};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.sidebar:
+    st.title("🎛️ Control Panel")
+
+    st.session_state.language = st.selectbox(
+        "🌐 Language / 語言",
+        ["繁體中文", "English", "日本語"],
+        index=["繁體中文", "English", "日本語"].index(st.session_state.language),
+    )
+    # Refresh localization after language change.
+    L10N = LOCALIZATIONS[st.session_state.language]
+
+    model_options = [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+    ]
+    current_model = st.session_state.active_model
+    if current_model not in model_options:
+        model_options.insert(0, current_model)
+
+    selected_model = st.selectbox(
+        "🤖 Gemini Model",
+        model_options,
+        index=model_options.index(current_model),
+        help="請使用你有權限存取的 Gemini model ID。",
+    )
+    st.session_state.active_model = selected_model
+
+    user_key = st.text_input(
+        "🔑 Gemini API Key",
+        value=st.session_state.api_key,
+        type="password",
+        help="建議在 Hugging Face Spaces Secrets 設定 GEMINI_API_KEY，而不是硬編碼。",
+    )
+    if user_key != st.session_state.api_key:
+        st.session_state.api_key = user_key
+        log_event("API key updated.")
+
+    st.divider()
+    st.subheader("🎨 Theme")
+    st.session_state.theme_name = st.selectbox(
+        "Pantone Palette",
+        list(PANTONE_THEMES.keys()),
+        index=list(PANTONE_THEMES.keys()).index(st.session_state.theme_name),
+    )
+    st.session_state.theme_mode = st.radio(
+        "Mode", ["Dark", "Light"], index=["Dark", "Light"].index(st.session_state.theme_mode), horizontal=True
+    )
+
+    st.divider()
+    nav_items = [
+        L10N["nav_constellation"],
+        L10N["nav_notes"],
+        L10N["nav_bench"],
+        L10N["nav_skill_studio"],
+        L10N["nav_pipeline"],
+        L10N["nav_agents"],
+        L10N["nav_wow_ai"],
+        L10N["nav_results"],
+        L10N["nav_settings"],
+    ]
+    nav_choice = st.radio("Navigation", nav_items, index=2)
+
+    st.divider()
+    st.caption(f"Version {APP_VERSION}")
+    st.caption(f"Token count: {st.session_state.token_count:,}")
+
+
+# ============================================================
+# 7. HEADER
+# ============================================================
+st.title(L10N["title"])
+st.caption(L10N["subtitle"])
+
+b = st.session_state.bench
+completion = {
+    "Stage 1": bool(b["stage1_result"]),
+    "Stage 2": bool(b["stage2_result"]),
+    "Stage 3": bool(b["stage3_result"]),
+    "Stage 4": bool(b["stage4_result"]),
+    "Stage 5": bool(b["stage5_report"]),
+}
+completed_count = sum(completion.values())
+st.progress(completed_count / 5, text=f"審查流程進度：{completed_count}/5")
+
+
+# ============================================================
+# 8. MODULE: 3D CONSTELLATION
+# ============================================================
+if nav_choice == L10N["nav_constellation"]:
+    st.subheader("🪐 3D WebGL Evidence Constellation")
+    st.write("以 Stage 1–5 審查證據建立互動式視覺化。此區只做 dossier 導覽，不取代文字證據。")
+
+    webgl_code = f"""
     <!doctype html>
     <html>
     <head>
-      <meta charset="utf-8"/>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
       <style>
-        html, body {{
-          margin: 0;
-          width: 100%;
-          height: 100%;
-          overflow: hidden;
-          background: {c["canvas"]};
-          font-family: Inter, system-ui, sans-serif;
-        }}
-        #hud {{
-          position: absolute;
-          left: 14px;
-          top: 12px;
-          color: {c["text"]};
-          z-index: 10;
-          pointer-events: none;
-        }}
-        #title {{
-          font-size: 16px;
-          font-weight: 800;
-        }}
-        #hint {{
-          font-size: 11px;
-          color: {c["muted"]};
-          margin-top: 4px;
-        }}
-        canvas {{ display:block; }}
-        #fallback {{
-          padding: 20px;
-          color: {c["text"]};
-          font-size: 13px;
-        }}
+        body {{ margin:0; overflow:hidden; background:{THEME['bg']}; }}
+        canvas {{ display:block; width:100%; height:430px; }}
       </style>
     </head>
     <body>
-      <div id="hud">
-        <div id="title">{html.escape(title)}</div>
-        <div id="hint">Drag to orbit · Scroll to zoom · Click a node</div>
-      </div>
-      <div id="fallback"></div>
-      <script>
-        const payload = {payload};
+    <script>
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(70, window.innerWidth/430, 0.1, 1000);
+      const renderer = new THREE.WebGLRenderer({{antialias:true, alpha:true}});
+      renderer.setSize(window.innerWidth,430);
+      document.body.appendChild(renderer.domElement);
 
-        function fallback() {{
-          const f = document.getElementById("fallback");
-          f.innerHTML =
-            "<strong>2D fallback</strong><br><br>" +
-            payload.nodes.map(n => "• " + (n.label || n.id)).join("<br>");
-        }}
+      const nodes = [];
+      const colors = [0xFF6F61, 0x00A86B, 0x1885D8, 0x7C5CFC, 0xD2B48C];
+      const labels = ["Stage 1","Stage 2","Stage 3","Stage 4","Stage 5"];
 
-        const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js";
-        script.onload = () => {{
-          try {{
-            init3D();
-          }} catch (e) {{
-            console.error(e);
-            fallback();
-          }}
-        }};
-        script.onerror = fallback;
-        document.head.appendChild(script);
+      for (let i=0;i<5;i++) {{
+        const geometry = new THREE.SphereGeometry(0.55, 28, 28);
+        const material = new THREE.MeshBasicMaterial({{color:colors[i], wireframe:i===0}});
+        const node = new THREE.Mesh(geometry, material);
+        const a = (i/5)*Math.PI*2;
+        node.position.set(Math.cos(a)*3, Math.sin(a)*1.8, Math.sin(a)*2);
+        scene.add(node);
+        nodes.push(node);
+      }}
 
-        function init3D() {{
-          const THREE = window.THREE;
-          document.getElementById("fallback").remove();
+      const points = nodes.map(n => n.position);
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(points.concat([points[0]]));
+      const lineMat = new THREE.LineBasicMaterial({{color:0xFFFFFF,opacity:.35,transparent:true}});
+      scene.add(new THREE.Line(lineGeo,lineMat));
 
-          const scene = new THREE.Scene();
-          scene.background = new THREE.Color(payload.bg);
-
-          const camera = new THREE.PerspectiveCamera(
-            55, window.innerWidth / window.innerHeight, 0.1, 1000
-          );
-          camera.position.set(0, 0, 18);
-
-          const renderer = new THREE.WebGLRenderer({{ antialias: true }});
-          renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-          renderer.setSize(window.innerWidth, window.innerHeight);
-          document.body.appendChild(renderer.domElement);
-
-          const ambient = new THREE.AmbientLight(0xffffff, 1.2);
-          scene.add(ambient);
-
-          const light = new THREE.PointLight(0xffffff, 2.4, 100);
-          light.position.set(6, 8, 12);
-          scene.add(light);
-
-          const group = new THREE.Group();
-          scene.add(group);
-
-          const positions = {{}};
-          const n = Math.max(payload.nodes.length, 1);
-
-          payload.nodes.forEach((node, i) => {{
-            const a = (i / n) * Math.PI * 2;
-            const radius = 5.5 + (i % 3) * 1.15;
-            const x = Math.cos(a) * radius;
-            const y = Math.sin(a * 1.7) * 3.0;
-            const z = Math.sin(a) * radius * .55;
-            positions[node.id] = new THREE.Vector3(x, y, z);
-
-            const geometry = new THREE.SphereGeometry(
-              node.size ? Math.max(.25, node.size) : .48, 20, 20
-            );
-            const color = node.color || (i % 2 ? payload.accent2 : payload.accent);
-            const material = new THREE.MeshStandardMaterial({{
-              color: color,
-              roughness: .28,
-              metalness: .35,
-              emissive: color,
-              emissiveIntensity: node.active ? .35 : .08
-            }});
-            const mesh = new THREE.Mesh(geometry, material);
-            mesh.position.copy(positions[node.id]);
-            mesh.userData = node;
-            group.add(mesh);
-
-            const labelCanvas = document.createElement("canvas");
-            labelCanvas.width = 512;
-            labelCanvas.height = 96;
-            const ctx = labelCanvas.getContext("2d");
-            ctx.fillStyle = "rgba(0,0,0,0)";
-            ctx.fillRect(0,0,512,96);
-            ctx.fillStyle = "{c["text"]}";
-            ctx.font = "bold 28px system-ui";
-            ctx.textAlign = "center";
-            ctx.fillText(String(node.label || node.id).slice(0, 30), 256, 55);
-            const texture = new THREE.CanvasTexture(labelCanvas);
-            const spriteMaterial = new THREE.SpriteMaterial({{
-              map: texture, transparent: true, depthWrite: false
-            }});
-            const sprite = new THREE.Sprite(spriteMaterial);
-            sprite.scale.set(3.2, .6, 1);
-            sprite.position.copy(mesh.position);
-            sprite.position.y += .75;
-            group.add(sprite);
-          }});
-
-          payload.edges.forEach(pair => {{
-            const a = positions[pair[0]];
-            const b = positions[pair[1]];
-            if (!a || !b) return;
-            const geometry = new THREE.BufferGeometry().setFromPoints([a,b]);
-            const material = new THREE.LineBasicMaterial({{
-              color: payload.accent2,
-              transparent: true,
-              opacity: .34
-            }});
-            group.add(new THREE.Line(geometry, material));
-          }});
-
-          const raycaster = new THREE.Raycaster();
-          const mouse = new THREE.Vector2();
-
-          function pointer(ev) {{
-            const rect = renderer.domElement.getBoundingClientRect();
-            mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-            mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-            raycaster.setFromCamera(mouse, camera);
-            const hits = raycaster.intersectObjects(group.children, true);
-            const hit = hits.find(h => h.object && h.object.userData && h.object.userData.label);
-            if (hit) {{
-              const n = hit.object.userData;
-              window.parent.postMessage({{
-                type: "wb-node-selected",
-                id: n.id,
-                label: n.label
-              }}, "*");
-            }}
-          }}
-          renderer.domElement.addEventListener("click", pointer);
-
-          let dragging = false, px = 0, py = 0, rx = 0, ry = 0;
-          renderer.domElement.addEventListener("pointerdown", e => {{
-            dragging = true; px = e.clientX; py = e.clientY;
-          }});
-          renderer.domElement.addEventListener("pointerup", () => dragging = false);
-          renderer.domElement.addEventListener("pointermove", e => {{
-            if (!dragging) return;
-            ry += (e.clientX - px) * .006;
-            rx += (e.clientY - py) * .006;
-            px = e.clientX; py = e.clientY;
-          }});
-          renderer.domElement.addEventListener("wheel", e => {{
-            camera.position.z = Math.max(7, Math.min(30, camera.position.z + e.deltaY * .012));
-          }}, {{passive:true}});
-
-          function animate(t) {{
-            requestAnimationFrame(animate);
-            if (!{str(st.session_state.get("reduced_motion", False)).lower()}) {{
-              group.rotation.y += .0018;
-              group.rotation.y += ry * .0005;
-              group.rotation.x = Math.max(-.8, Math.min(.8, rx));
-            }}
-            ry *= .96;
-            rx *= .96;
-            renderer.render(scene, camera);
-          }}
-          animate();
-
-          window.addEventListener("resize", () => {{
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-          }});
-        }}
-      </script>
+      camera.position.z=8;
+      function animate() {{
+        requestAnimationFrame(animate);
+        nodes.forEach((n,i)=>{{n.rotation.x+=.008+i*.001;n.rotation.y+=.01;}});
+        scene.rotation.y+=.0025;
+        renderer.render(scene,camera);
+      }}
+      animate();
+      window.addEventListener("resize",()=>{{
+        camera.aspect=window.innerWidth/430;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth,430);
+      }});
+    </script>
     </body>
     </html>
     """
+    components.html(webgl_code, height=450)
 
-    components.html(html_doc, height=height, scrolling=False)
-
-
-# =============================================================================
-# Shell
-# =============================================================================
-
-def render_sidebar() -> None:
-    with st.sidebar:
-        st.markdown("## ◈ 3D Workbench")
-        st.caption(f"v{APP_VERSION}")
-
-        pages = {
-            "home": t("home"),
-            "notes": t("notes"),
-            "review": t("review"),
-            "skills": t("skills"),
-            "pipeline": t("pipeline"),
-            "agents": t("agents"),
-            "results": t("results"),
-            "visuals": t("visuals"),
-            "settings": t("settings"),
-        }
-
-        current = st.session_state["page"]
-        for key, label in pages.items():
-            if st.button(label, use_container_width=True, key=f"nav_{key}"):
-                st.session_state["page"] = key
-                add_log(f"Navigation: {label}", "INFO", "ui")
-                st.rerun()
-
-        st.divider()
-        st.caption("Runtime")
-        provider = st.session_state.get("active_provider", "Gemini")
-        status = provider_key_status(provider)
-        state_label = "● configured" if status["configured"] else "○ fallback"
-        st.write(f"**{provider}** · {state_label}")
-        st.write(f"**Model:** `{st.session_state['global_model']}`")
-        st.write(f"**Runs:** {st.session_state['run_count']}")
-        st.write(f"**Tokens≈:** {st.session_state['token_estimate']:,}")
-
-        st.divider()
-        if st.button("↻ Reset session UI", use_container_width=True):
-            for key in ["page", "dashboard_open", "flash"]:
-                st.session_state.pop(key, None)
-            st.session_state["page"] = "home"
-            add_log("Session UI reset.", "INFO", "ui")
-            st.rerun()
+    st.dataframe(
+        [
+            {"Stage": "1", "Evidence": "FDA regulatory intelligence", "Status": "完成" if completion["Stage 1"] else "待執行"},
+            {"Stage": "2", "Evidence": "IFU device / accessories / software", "Status": "完成" if completion["Stage 2"] else "待執行"},
+            {"Stage": "3", "Evidence": "Submission document mapping", "Status": "完成" if completion["Stage 3"] else "待執行"},
+            {"Stage": "4", "Evidence": "Comprehensive review guidance", "Status": "完成" if completion["Stage 4"] else "待執行"},
+            {"Stage": "5", "Evidence": "30 questions + final report", "Status": "完成" if completion["Stage 5"] else "待執行"},
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
-def render_topbar() -> None:
-    left, mid, right = st.columns([2.5, 3.5, 2])
+# ============================================================
+# 9. MODULE: NOTE KEEPER
+# ============================================================
+elif nav_choice == L10N["nav_notes"]:
+    st.subheader("📝 AI Note Keeper")
+    left, right = st.columns([1, 2])
+
     with left:
-        st.markdown(
-            '<div class="wb-chip">TRACEABLE</div>'
-            '<div class="wb-chip">AI-AUGMENTED</div>'
-            '<div class="wb-chip">WEBGL</div>',
-            unsafe_allow_html=True,
-        )
-    with mid:
-        st.caption(
-            f"Provider: {st.session_state['active_provider']} · "
-            f"Model: {st.session_state['global_model']}"
-        )
-    with right:
-        if st.button("⚙", help="Settings", key="top_settings"):
-            st.session_state["page"] = "settings"
-            st.rerun()
+        uploaded = st.file_uploader("Upload notes", type=["txt", "md", "csv"])
+        if uploaded:
+            text = uploaded.getvalue().decode("utf-8", errors="ignore")
+            if st.button("➕ Add Note", key="add_note"):
+                st.session_state.notes.append(
+                    {"id": f"NOTE-{len(st.session_state.notes)+1:03d}", "title": uploaded.name, "content": text}
+                )
+                st.success("Note added.")
 
-
-def render_flash() -> None:
-    flash = st.session_state.get("flash")
-    if not flash:
-        return
-    if flash["level"] == "error":
-        st.error(flash["message"])
-    elif flash["level"] == "warning":
-        st.warning(flash["message"])
-    else:
-        st.success(flash["message"])
-    clear_flash()
-
-
-def render_dashboard() -> None:
-    if not st.session_state.get("dashboard_open", True):
-        return
-
-    logs = st.session_state.get("logs", [])[-14:]
-    log_html = "<br>".join(
-        f"[{html.escape(item['level'])}] {html.escape(item['message'])}"
-        for item in reversed(logs)
-    )
-
-    c = theme_tokens()
-    st.markdown(
-        f"""
-        <div class="wb-floating">
-          <div style="font-weight:800;margin-bottom:7px;">◉ Live Observatory</div>
-          <div style="font-size:.72rem;color:{c["muted"]};margin-bottom:8px;">
-            {html.escape(st.session_state["page"])} ·
-            {html.escape(st.session_state["active_provider"])} ·
-            {html.escape(st.session_state["global_model"])}
-          </div>
-          <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px;">
-            <span class="wb-chip">{st.session_state["run_count"]} runs</span>
-            <span class="wb-chip">≈ {st.session_state["token_estimate"]:,} tokens</span>
-            <span class="wb-chip">{artifact_count()} artifacts</span>
-          </div>
-          <div class="wb-log">{log_html}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# =============================================================================
-# Home
-# =============================================================================
-
-def page_home() -> None:
-    st.markdown(
-        """
-        <div class="wb-hero">
-          <div class="wb-title">Next-Generation 3D WebGL Workbench</div>
-          <div class="wb-subtitle">
-            Evidence-first AI workflows · multilingual workspace · governed artifacts · live observability
-          </div>
-          <div style="margin-top:14px;">
-            <span class="wb-chip">Traditional Chinese</span>
-            <span class="wb-chip">Gemini default</span>
-            <span class="wb-chip">A/B/C evaluation</span>
-            <span class="wb-chip">Pipeline Galaxy</span>
-            <span class="wb-chip">Secure provider fallback</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    cols = st.columns(4)
-    kpis = [
-        ("Notes", len(st.session_state["notes"])),
-        ("Skills", len(st.session_state["skills"])),
-        ("Pipelines", len(st.session_state["pipelines"])),
-        ("Artifacts", artifact_count()),
-    ]
-    for col, (label, value) in zip(cols, kpis):
-        with col:
-            st.markdown(
-                f'<div class="wb-card"><div class="wb-muted">{label}</div>'
-                f'<div class="wb-kpi">{value}</div></div>',
-                unsafe_allow_html=True,
+        st.write("### Saved notes")
+        if st.session_state.notes:
+            idx = st.selectbox(
+                "Select",
+                range(len(st.session_state.notes)),
+                format_func=lambda i: st.session_state.notes[i]["title"],
             )
-
-    st.markdown('<div class="wb-section">Workbench Launchpad</div>', unsafe_allow_html=True)
-    a, b, c = st.columns(3)
-    with a:
-        if st.button("✦ Open AI Note Keeper", use_container_width=True):
-            st.session_state["page"] = "notes"
-            st.rerun()
-        if st.button("◈ Open Review Bench", use_container_width=True):
-            st.session_state["page"] = "review"
-            st.rerun()
-    with b:
-        if st.button("◇ Open Skill Studio", use_container_width=True):
-            st.session_state["page"] = "skills"
-            st.rerun()
-        if st.button("⌁ Open Pipeline Studio", use_container_width=True):
-            st.session_state["page"] = "pipeline"
-            st.rerun()
-    with c:
-        if st.button("◎ Open 3D Visualization", use_container_width=True):
-            st.session_state["page"] = "visuals"
-            st.rerun()
-        if st.button("▣ Open Results Library", use_container_width=True):
-            st.session_state["page"] = "results"
-            st.rerun()
-
-    st.markdown('<div class="wb-section">Workspace topology</div>', unsafe_allow_html=True)
-
-    nodes = [
-        {"id": "notes", "label": "AI Notes", "active": True, "size": .62},
-        {"id": "review", "label": "Review Bench", "size": .55},
-        {"id": "skills", "label": "Skill Studio", "size": .60},
-        {"id": "pipeline", "label": "Pipeline", "size": .66},
-        {"id": "agents", "label": "Agents", "size": .50},
-        {"id": "results", "label": "Results", "size": .56},
-    ]
-    edges = [
-        ("notes", "review"),
-        ("notes", "skills"),
-        ("skills", "pipeline"),
-        ("agents", "skills"),
-        ("pipeline", "results"),
-        ("review", "results"),
-    ]
-    webgl_scene("Workspace Constellation", nodes, edges, height=500)
-
-
-# =============================================================================
-# Note Keeper
-# =============================================================================
-
-def note_by_id(note_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not note_id:
-        return None
-    return next((n for n in st.session_state["notes"] if n["id"] == note_id), None)
-
-
-def page_notes() -> None:
-    st.title(t("notes"))
-
-    left, right = st.columns([1, 2.1])
-    with left:
-        st.subheader("Intake")
-        uploaded = st.file_uploader(
-            "Upload text / Markdown / PDF",
-            type=["txt", "md", "markdown", "pdf", "json", "yaml", "yml", "csv"],
-            key="note_upload",
-        )
-        if uploaded and st.button("Import file", use_container_width=True):
-            text, metadata = extract_uploaded_file(uploaded)
-            note = {
-                "id": uid("note"),
-                "title": uploaded.name,
-                "raw": text,
-                "markdown": text,
-                "metadata": metadata,
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            }
-            st.session_state["notes"].insert(0, note)
-            st.session_state["current_note_id"] = note["id"]
-            add_log(f"Note imported: {uploaded.name}", "INFO", "notes")
-            set_flash("Note imported successfully.")
-            st.rerun()
-
-        if st.button("＋ New note", use_container_width=True):
-            note = {
-                "id": uid("note"),
-                "title": "Untitled Note",
-                "raw": "",
-                "markdown": "# Untitled Note\n\n",
-                "metadata": {"source": "manual"},
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            }
-            st.session_state["notes"].insert(0, note)
-            st.session_state["current_note_id"] = note["id"]
-            add_log("New note created.", "INFO", "notes")
-            st.rerun()
-
-        if st.session_state["notes"]:
-            options = {
-                f"{n['title']} · {short_id(n['id'])}": n["id"]
-                for n in st.session_state["notes"]
-            }
-            labels = list(options.keys())
-            current_id = st.session_state.get("current_note_id")
-            default_idx = 0
-            for i, label in enumerate(labels):
-                if options[label] == current_id:
-                    default_idx = i
-                    break
-            selected_label = st.selectbox("Open note", labels, index=default_idx)
-            st.session_state["current_note_id"] = options[selected_label]
-
-        st.divider()
-        st.subheader("AI Magics")
-        magic = st.selectbox(
-            "Transformation",
-            [
-                "Structure Notes",
-                "Extract Entities",
-                "Draft Summary",
-                "Find Gaps & Contradictions",
-                "Translate & Harmonize",
-                "AI Keyword Colorizer",
-            ],
-        )
-        if st.button("✦ Run AI Magic", use_container_width=True):
-            note = note_by_id(st.session_state.get("current_note_id"))
-            if not note:
-                st.warning("Create or import a note first.")
-            else:
-                prompt = f"""
-You are working inside an evidence-first note workspace.
-Magic: {magic}
-Do not invent source facts. Clearly separate source-derived statements
-from suggestions.
-
-SOURCE:
-{note["raw"]}
-"""
-                try:
-                    result = execute_ai(
-                        prompt,
-                        model=st.session_state["global_model"],
-                        purpose=f"Note Magic: {magic}",
-                    )
-                    note["markdown"] = result
-                    note["updated_at"] = now_iso()
-                    save_artifact("note_transform", f"{note['title']} — {magic}", result)
-                    set_flash(f"{magic} completed.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+        else:
+            idx = None
+            st.info("尚無筆記。")
 
     with right:
-        note = note_by_id(st.session_state.get("current_note_id"))
-        if not note:
-            st.info("Select a note or create a new one.")
-            return
-
-        title = st.text_input("Title", value=note["title"], key=f"title_{note['id']}")
-        edited = st.text_area(
-            "Structured Markdown",
-            value=note["markdown"],
-            height=500,
-            key=f"editor_{note['id']}",
-        )
-
-        if st.button("Save note", type="primary"):
-            note["title"] = title
-            note["markdown"] = edited
-            note["updated_at"] = now_iso()
-            save_artifact("note", title, edited, {"source_note_id": note["id"]})
-            add_log(f"Note saved: {title}", "INFO", "notes")
-            set_flash("Note saved.")
-            st.rerun()
-
-        st.markdown("#### Keyword Colorizer")
-        keywords = st.text_input(
-            "Comma-separated keywords",
-            value=", ".join(st.session_state.get("note_highlights", [])),
-        )
-        if st.button("Apply coral highlights"):
-            st.session_state["note_highlights"] = [
-                x.strip() for x in keywords.split(",") if x.strip()
-            ]
-            add_log("Keyword highlight set updated.", "INFO", "notes")
-
-        highlighted = edited
-        for kw in st.session_state.get("note_highlights", []):
-            highlighted = re.sub(
-                re.escape(kw),
-                lambda m: f'<span class="wb-coral">{html.escape(m.group(0))}</span>',
-                highlighted,
-                flags=re.IGNORECASE,
-            )
-
-        st.markdown("#### Preview")
-        st.markdown(highlighted, unsafe_allow_html=True)
-
-
-# =============================================================================
-# Review Bench
-# =============================================================================
-
-def page_review() -> None:
-    st.title(t("review"))
-    st.caption("Evidence-first intake, normalization, contradiction mapping, and report generation.")
-
-    st.session_state["review"]["case_name"] = st.text_input(
-        "Case / project name",
-        value=st.session_state["review"].get("case_name", ""),
-    )
-
-    uploads = st.file_uploader(
-        "Upload review materials",
-        type=["txt", "md", "pdf", "json", "yaml", "yml", "csv"],
-        accept_multiple_files=True,
-        key="review_uploads",
-    )
-
-    if uploads:
-        st.session_state["review"]["files"] = []
-        for item in uploads:
-            text, meta = extract_uploaded_file(item)
-            st.session_state["review"]["files"].append(
-                {"name": item.name, "text": text, "metadata": meta}
-            )
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        parse = st.button("1 · Parse evidence", use_container_width=True)
-    with c2:
-        draft = st.button("2 · Draft review", use_container_width=True)
-    with c3:
-        final = st.button("3 · Build final report", use_container_width=True)
-
-    if parse:
-        all_text = "\n\n".join(
-            f"# {x['name']}\n{x['text']}"
-            for x in st.session_state["review"]["files"]
-        )
-        if not all_text:
-            st.warning("Upload at least one review file.")
+        if idx is not None:
+            note = st.session_state.notes[idx]
+            title = st.text_input("Title", note["title"])
+            content = st.text_area("Content", note["content"], height=360)
+            if st.button("💾 Save Note", key="save_note"):
+                note["title"] = title
+                note["content"] = content
+                st.success("Saved.")
         else:
-            sentences = re.split(r"(?<=[.!?。！？])\s+", all_text)
-            claims = [
-                {
-                    "id": uid("claim"),
-                    "text": s.strip(),
-                    "source": "uploaded evidence",
-                    "support": "pending",
-                }
-                for s in sentences if len(s.strip()) > 15
-            ][:80]
-            conflicts = []
-            for i, claim in enumerate(claims):
-                if "not " in claim["text"].lower() or "不" in claim["text"]:
-                    conflicts.append(
-                        {
-                            "id": uid("conflict"),
-                            "claim_id": claim["id"],
-                            "type": "potential contradiction",
-                            "text": claim["text"],
-                        }
-                    )
-            st.session_state["review"]["claims"] = claims
-            st.session_state["review"]["conflicts"] = conflicts
-            add_log(f"Review parsed: {len(claims)} claims, {len(conflicts)} flags.", "INFO", "review")
-            set_flash("Evidence parsing completed.")
-            st.rerun()
+            st.info("上傳 TXT/MD 後可建立筆記。")
 
-    if draft:
-        source = "\n".join(x["text"] for x in st.session_state["review"]["files"])
-        prompt = f"""
-Create a professional evidence-first review draft for:
-{st.session_state["review"]["case_name"]}
 
-Rules:
-- Do not invent evidence.
-- Separate source facts, observations, and open questions.
-- Include a claim/evidence matrix.
-- Include contradictions and missing evidence.
-- Be explicit about uncertainty.
+# ============================================================
+# 10. MODULE: FIVE-STAGE REVIEW BENCH
+# ============================================================
+elif nav_choice == L10N["nav_bench"]:
+    st.subheader("⚖️ Staged Medical Device Regulatory Review Bench")
+    st.caption("建議工作順序：Stage 1 → Stage 2 → Stage 3 → Stage 4 → Stage 5。每一階段結果會留在 session state。")
 
-SOURCE:
-{source}
-"""
-        try:
-            st.session_state["review"]["draft"] = execute_ai(
-                prompt, purpose="Review Bench draft"
-            )
-            add_log("Review draft generated.", "INFO", "review")
-            set_flash("Draft generated.")
-        except Exception as exc:
-            st.error(str(exc))
+    tabs = st.tabs([
+        "1️⃣ FDA Intelligence",
+        "2️⃣ IFU Specs",
+        "3️⃣ Submission Docs",
+        "4️⃣ Review Guidance",
+        "5️⃣ Q&A + Final Report",
+    ])
 
-    if final:
-        draft_text = st.session_state["review"].get("draft", "")
-        if not draft_text:
-            st.warning("Generate the draft first.")
-        else:
-            prompt = f"""
-Convert the following review draft into a final professional report.
-Preserve traceability. Do not add unsupported claims.
-
-DRAFT:
-{draft_text}
-"""
-            try:
-                st.session_state["review"]["final"] = execute_ai(
-                    prompt, purpose="Review Bench final report"
-                )
-                save_artifact(
-                    "review_report",
-                    st.session_state["review"]["case_name"] or "Review Report",
-                    st.session_state["review"]["final"],
-                )
-                add_log("Final review report generated.", "INFO", "review")
-                set_flash("Final report generated.")
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
-
-    st.divider()
-    tabs = st.tabs(["Claims", "Conflicts", "Draft", "Final"])
+    # ---------------- Stage 1 ----------------
     with tabs[0]:
-        st.dataframe(
-            st.session_state["review"]["claims"],
-            use_container_width=True,
-            hide_index=True,
+        st.markdown(stage_badge(1, "FDA Regulatory Intelligence Memo", completion["Stage 1"]), unsafe_allow_html=True)
+        st.markdown("### 裝置描述")
+        st.session_state.bench["stage1_description"] = st.text_area(
+            "請貼上 device description / intended use / indication / technology description",
+            value=b["stage1_description"],
+            height=220,
+            placeholder="例如：裝置名稱、預期用途、使用者、病患族群、主要硬體、軟體、AI 功能、附件、工作原理……",
+            key="stage1_description_widget",
         )
-    with tabs[1]:
-        st.dataframe(
-            st.session_state["review"]["conflicts"],
-            use_container_width=True,
-            hide_index=True,
-        )
-    with tabs[2]:
-        st.text_area(
-            "Draft",
-            value=st.session_state["review"].get("draft", ""),
-            height=400,
-            key="review_draft_view",
-        )
-    with tabs[3]:
-        final_text = st.session_state["review"].get("final", "")
-        st.markdown(final_text if final_text else "_No final report yet._")
 
-
-# =============================================================================
-# Skill Studio
-# =============================================================================
-
-def current_skill() -> Dict[str, Any]:
-    skill_id = st.session_state.get("current_skill_id")
-    if skill_id:
-        for skill in st.session_state["skills"]:
-            if skill["id"] == skill_id:
-                return skill
-    if st.session_state["skills"]:
-        st.session_state["current_skill_id"] = st.session_state["skills"][0]["id"]
-        return st.session_state["skills"][0]
-    skill = default_skill()
-    st.session_state["skills"].append(skill)
-    st.session_state["current_skill_id"] = skill["id"]
-    return skill
-
-
-def skill_prompt(skill: Dict[str, Any], input_text: str) -> str:
-    return (
-        f"{skill.get('system','')}\n\n"
-        f"Instructions:\n{skill.get('instructions','')}\n\n"
-        f"Input:\n{input_text}"
-    )
-
-
-def page_skills() -> None:
-    st.title(t("skills"))
-    st.caption("Create, edit, run, compare, and review governed skills.")
-
-    left, right = st.columns([1, 2.2])
-    with left:
-        st.subheader("Skill Library")
-        if st.button("＋ Create skill", use_container_width=True):
-            skill = default_skill(f"New Skill {len(st.session_state['skills']) + 1}")
-            st.session_state["skills"].insert(0, skill)
-            st.session_state["current_skill_id"] = skill["id"]
-            add_log("Skill created.", "INFO", "skills")
-            st.rerun()
-
-        options = {
-            f"{s['name']} · v{s['version']}": s["id"]
-            for s in st.session_state["skills"]
-        }
-        selected = st.selectbox("Open skill", list(options.keys()))
-        st.session_state["current_skill_id"] = options[selected]
-
-        if st.button("Download selected skill", use_container_width=True):
-            skill = current_skill()
-            payload = (
-                f"# {skill['name']}\n\n"
-                f"Version: {skill['version']}\n\n"
-                f"## System\n{skill['system']}\n\n"
-                f"## Instructions\n{skill['instructions']}\n"
-            )
-            st.download_button(
-                "Download SKILL.md",
-                data=payload,
-                file_name=f"{skill['name'].replace(' ','_')}.md",
-                mime="text/markdown",
-                key="skill_dl",
-            )
-
-    skill = current_skill()
-    with right:
-        skill["name"] = st.text_input("Name", skill["name"])
-        skill["description"] = st.text_area("Description", skill["description"], height=80)
-        skill["version"] = st.text_input("Version", skill["version"])
-        skill["system"] = st.text_area("System", skill["system"], height=140)
-        skill["instructions"] = st.text_area("Instructions", skill["instructions"], height=220)
-
-        if st.button("Save skill", type="primary"):
-            skill["updated_at"] = now_iso()
-            save_artifact(
-                "skill",
-                skill["name"],
-                skill,
-                {"skill_id": skill["id"], "version": skill["version"]},
-            )
-            add_log(f"Skill saved: {skill['name']}", "INFO", "skills")
-            set_flash("Skill saved.")
-            st.rerun()
-
-    st.divider()
-    st.subheader("A / B / C Skill Arena")
-
-    cmp = st.session_state["comparison"]
-    skill_ids = [s["id"] for s in st.session_state["skills"]]
-    labels = {s["id"]: s["name"] for s in st.session_state["skills"]}
-
-    if skill_ids:
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns([1, 3])
         with c1:
-            cmp["skill_a"] = st.selectbox(
-                "Skill A", skill_ids,
-                index=skill_ids.index(cmp["skill_a"]) if cmp["skill_a"] in skill_ids else 0,
-                format_func=lambda x: labels[x],
-            )
-            cmp["model_a"] = st.selectbox(
-                "Model A", list(MODELS.keys()),
-                index=list(MODELS.keys()).index(cmp["model_a"])
-                if cmp["model_a"] in MODELS else 0,
-            )
+            run1 = st.button("🔎 執行 Stage 1 Web Search", type="primary", key="run_stage1")
         with c2:
-            cmp["skill_b"] = st.selectbox(
-                "Skill B", skill_ids,
-                index=skill_ids.index(cmp["skill_b"]) if cmp["skill_b"] in skill_ids else min(1, len(skill_ids)-1),
-                format_func=lambda x: labels[x],
+            st.info("搜尋重點：FDA 510(k) Summary、classification、product code、guidance、standards、labeling、recall 等。")
+
+        if run1:
+            try:
+                run_stage1()
+            except Exception as exc:
+                st.error(f"Stage 1 失敗：{exc}")
+                log_event(f"Stage 1 error: {exc}")
+
+        if b["stage1_result"]:
+            st.markdown("### 📄 FDA Regulatory Intelligence Memo")
+            st.markdown(b["stage1_result"])
+            if b["stage1_sources"]:
+                st.markdown("### 🔗 Detected source URLs")
+                for url in b["stage1_sources"]:
+                    st.markdown(f"- {url}")
+            st.download_button(
+                "📥 Download Stage 1 Markdown",
+                data=b["stage1_result"],
+                file_name="stage1_fda_regulatory_intelligence.md",
+                mime="text/markdown",
+                key="dl_stage1",
             )
-            cmp["model_b"] = st.selectbox(
-                "Model B", list(MODELS.keys()),
-                index=list(MODELS.keys()).index(cmp["model_b"])
-                if cmp["model_b"] in MODELS else 0,
+
+    # ---------------- Stage 2 ----------------
+    with tabs[1]:
+        st.markdown(stage_badge(2, "IFU Device Specification Summary", completion["Stage 2"]), unsafe_allow_html=True)
+        st.write("上傳 IFU 後，AI 會整理：①主要裝置規格 ②附件/探頭 ③主要軟體功能與 AI 判定。")
+
+        uploaded_ifu = st.file_uploader(
+            "📤 Upload IFU",
+            type=["pdf", "txt", "md", "csv", "docx"],
+            key="ifu_uploader",
+        )
+        if uploaded_ifu:
+            try:
+                name, text = parse_ifu_file(uploaded_ifu)
+                st.session_state.bench["stage2_ifu_name"] = name
+                st.session_state.bench["stage2_ifu_text"] = text
+                st.success(f"已讀取 {name}，約 {len(text):,} 字元。")
+                with st.expander("Preview extracted IFU text"):
+                    st.text(text[:8000])
+            except Exception as exc:
+                st.error(f"IFU 讀取失敗：{exc}")
+
+        if b["stage2_ifu_text"]:
+            if st.button("🧩 建立 IFU 規格摘要", type="primary", key="run_stage2"):
+                try:
+                    run_stage2()
+                except Exception as exc:
+                    st.error(f"Stage 2 失敗：{exc}")
+                    log_event(f"Stage 2 error: {exc}")
+
+        if b["stage2_result"]:
+            try:
+                parsed2 = json.loads(b["stage2_result"])
+            except Exception:
+                parsed2 = {}
+
+            st.markdown("### 裝置規格摘要")
+            st.write(parsed2.get("device_summary", ""))
+
+            st.markdown("### 📐 主要裝置規格")
+            render_markdown_table(
+                b["stage2_specs"],
+                ["title", "spec", "comments"],
             )
-        with c3:
-            cmp["skill_c"] = st.selectbox(
-                "Review skill C", skill_ids,
-                index=skill_ids.index(cmp["skill_c"]) if cmp["skill_c"] in skill_ids else 0,
-                format_func=lambda x: labels[x],
-            )
-            cmp["model_c"] = st.selectbox(
-                "Review model C", list(MODELS.keys()),
-                index=list(MODELS.keys()).index(cmp["model_c"])
-                if cmp["model_c"] in MODELS else 0,
+
+            st.markdown("### 🔌 Accessories / Probes")
+            render_markdown_table(
+                b["stage2_accessories"],
+                ["title", "spec", "comments"],
             )
 
-    cmp["input"] = st.text_area(
-        "Comparison input",
-        value=cmp.get("input", ""),
-        height=180,
-        placeholder="Paste the same evidence/task into A and B.",
-    )
-    cmp["criteria"] = st.text_input(
-        "C review criteria",
-        value=cmp.get("criteria", ""),
-    )
-
-    a, b, c = st.columns(3)
-    with a:
-        run_a = st.button("▶ Run A", use_container_width=True)
-    with b:
-        run_b = st.button("▶ Run B", use_container_width=True)
-    with c:
-        run_c = st.button("◎ Run C review", use_container_width=True)
-
-    if run_a:
-        selected_skill = next(s for s in st.session_state["skills"] if s["id"] == cmp["skill_a"])
-        try:
-            cmp["output_a"] = execute_ai(
-                skill_prompt(selected_skill, cmp["input"]),
-                model=cmp["model_a"],
-                purpose="Skill Arena A",
+            st.markdown("### 💻 主要軟體功能")
+            render_markdown_table(
+                b["stage2_software"],
+                ["title", "brief_spec", "ai_related", "comments"],
             )
-            add_log("Skill Arena A completed.", "INFO", "skills")
-            st.rerun()
-        except Exception as exc:
-            st.error(str(exc))
 
-    if run_b:
-        selected_skill = next(s for s in st.session_state["skills"] if s["id"] == cmp["skill_b"])
-        try:
-            cmp["output_b"] = execute_ai(
-                skill_prompt(selected_skill, cmp["input"]),
-                model=cmp["model_b"],
-                purpose="Skill Arena B",
+            st.download_button(
+                "📥 Download Stage 2 JSON",
+                data=b["stage2_result"],
+                file_name="stage2_ifu_specification_summary.json",
+                mime="application/json",
+                key="dl_stage2",
             )
-            add_log("Skill Arena B completed.", "INFO", "skills")
-            st.rerun()
-        except Exception as exc:
-            st.error(str(exc))
 
-    if run_c:
-        selected_skill = next(s for s in st.session_state["skills"] if s["id"] == cmp["skill_c"])
-        review_prompt = f"""
-{skill_prompt(selected_skill, "")}
-
-You are the C reviewer in an A/B/C comparison.
-Compare the two outputs below using these criteria:
-{cmp["criteria"]}
-
-OUTPUT A:
-{cmp["output_a"]}
-
-OUTPUT B:
-{cmp["output_b"]}
-
-Return:
-1. Shared strengths
-2. Material differences
-3. Evidence fidelity
-4. Completeness
-5. Traceability
-6. Concrete revision suggestions
-7. Comprehensive reviewer comments
-
-Do not invent facts that are not present in A, B, or the input.
-"""
-        try:
-            cmp["review_c"] = execute_ai(
-                review_prompt,
-                model=cmp["model_c"],
-                purpose="Skill Arena C review",
-            )
-            save_artifact(
-                "abc_comparison",
-                "A-B-C Skill Comparison",
-                copy.deepcopy(cmp),
-            )
-            add_log("Skill Arena C review completed.", "INFO", "skills")
-            set_flash("A/B/C comparison completed.")
-            st.rerun()
-        except Exception as exc:
-            st.error(str(exc))
-
-    o1, o2, o3 = st.columns(3)
-    with o1:
-        st.markdown("### A")
-        st.markdown(cmp.get("output_a") or "_Not run._")
-    with o2:
-        st.markdown("### B")
-        st.markdown(cmp.get("output_b") or "_Not run._")
-    with o3:
-        st.markdown("### C Review")
-        st.markdown(cmp.get("review_c") or "_Not run._")
-
-    nodes = [
-        {"id": "A", "label": "Skill A", "active": bool(cmp.get("output_a")), "size": .65},
-        {"id": "B", "label": "Skill B", "active": bool(cmp.get("output_b")), "size": .65},
-        {"id": "C", "label": "C Review", "active": bool(cmp.get("review_c")), "size": .72},
-        {"id": "input", "label": "Shared Input", "size": .55},
-    ]
-    edges = [("input", "A"), ("input", "B"), ("A", "C"), ("B", "C")]
-    webgl_scene("Skill Arena", nodes, edges, height=420)
-
-
-# =============================================================================
-# Pipeline Studio
-# =============================================================================
-
-def current_pipeline() -> Dict[str, Any]:
-    pipeline_id = st.session_state.get("current_pipeline_id")
-    if pipeline_id:
-        for p in st.session_state["pipelines"]:
-            if p["id"] == pipeline_id:
-                return p
-    if st.session_state["pipelines"]:
-        st.session_state["current_pipeline_id"] = st.session_state["pipelines"][0]["id"]
-        return st.session_state["pipelines"][0]
-    pipeline = default_pipeline()
-    st.session_state["pipelines"].append(pipeline)
-    st.session_state["current_pipeline_id"] = pipeline["id"]
-    return pipeline
-
-
-def validate_pipeline(pipeline: Dict[str, Any]) -> List[str]:
-    issues = []
-    ids = [n["id"] for n in pipeline.get("nodes", [])]
-    if len(ids) != len(set(ids)):
-        issues.append("Duplicate node IDs.")
-    node_set = set(ids)
-    for a, b in pipeline.get("edges", []):
-        if a not in node_set or b not in node_set:
-            issues.append(f"Edge references missing node: {a} → {b}")
-    if not pipeline.get("nodes"):
-        issues.append("Pipeline contains no nodes.")
-    return issues
-
-
-def run_pipeline(pipeline: Dict[str, Any], input_text: str) -> None:
-    run = {
-        "id": uid("run"),
-        "pipeline_id": pipeline["id"],
-        "started_at": now_iso(),
-        "input": input_text,
-        "nodes": {},
-    }
-    st.session_state["pipeline_run"] = run
-
-    for node in pipeline["nodes"]:
-        node["status"] = "running"
-        add_log(f"Pipeline node started: {node['label']}", "INFO", "pipeline")
-        time.sleep(0.03)
-
-        if node["type"] == "input":
-            output = input_text
-        elif node["type"] == "parse":
-            output = "\n".join(
-                f"- {s.strip()}" for s in re.split(r"\n+|(?<=[.!?。！？])\s+", input_text)
-                if s.strip()
-            )
-        elif node["type"] == "extract":
-            terms = sorted(set(re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{3,}\b", input_text)))
-            output = json.dumps({"entities": terms[:80]}, ensure_ascii=False, indent=2)
-        elif node["type"] == "compare":
-            output = "Comparison checkpoint created from normalized pipeline input."
-        elif node["type"] == "review":
-            output = heuristic_ai(input_text, st.session_state["global_model"])
-        elif node["type"] == "export":
-            output = json.dumps(
-                {
-                    "pipeline": pipeline["name"],
-                    "run_id": run["id"],
-                    "input_hash": hash_text(input_text),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        else:
-            output = input_text
-
-        node["status"] = "complete"
-        run["nodes"][node["id"]] = output
-        add_log(f"Pipeline node completed: {node['label']}", "INFO", "pipeline")
-
-    run["finished_at"] = now_iso()
-    save_artifact("pipeline_run", f"{pipeline['name']} Run", run)
-    set_flash("Pipeline run completed.")
-
-
-def page_pipeline() -> None:
-    st.title(t("pipeline"))
-    st.caption("Graph-native workflow builder with deterministic checkpoints and 3D execution visualization.")
-
-    left, right = st.columns([1, 2.2])
-    with left:
-        if st.button("＋ New pipeline", use_container_width=True):
-            p = default_pipeline()
-            p["name"] = f"Pipeline {len(st.session_state['pipelines']) + 1}"
-            st.session_state["pipelines"].insert(0, p)
-            st.session_state["current_pipeline_id"] = p["id"]
-            add_log("Pipeline created.", "INFO", "pipeline")
-            st.rerun()
-
-        options = {
-            f"{p['name']} · v{p['version']}": p["id"]
-            for p in st.session_state["pipelines"]
-        }
-        selected = st.selectbox("Open pipeline", list(options.keys()))
-        st.session_state["current_pipeline_id"] = options[selected]
-
-    pipeline = current_pipeline()
-    with right:
-        pipeline["name"] = st.text_input("Pipeline name", pipeline["name"])
-        pipeline["description"] = st.text_area(
-            "Description", pipeline["description"], height=70
+    # ---------------- Stage 3 ----------------
+    with tabs[2]:
+        st.markdown(stage_badge(3, "送件文件對照總表", completion["Stage 3"]), unsafe_allow_html=True)
+        b["stage3_doc_list"] = st.text_area(
+            "請貼上送件文件清單",
+            value=b["stage3_doc_list"],
+            height=300,
+            placeholder="一行一份文件，例如：\n申請書\n產品技術規格\n風險管理報告\n軟體驗證報告\n臨床評估報告\nIFU\n標籤……",
+            key="stage3_doc_list_widget",
         )
 
-        st.markdown("#### Nodes")
-        for idx, node in enumerate(pipeline["nodes"]):
-            a, b, c, d = st.columns([.7, 2, 1.2, .8])
-            with a:
-                st.write(node["id"])
-            with b:
-                node["label"] = st.text_input(
-                    "Label",
-                    node["label"],
-                    key=f"node_label_{pipeline['id']}_{idx}",
-                    label_visibility="collapsed",
-                )
-            with c:
-                node["type"] = st.selectbox(
-                    "Type",
-                    ["input", "parse", "extract", "transform", "compare", "review", "merge", "export"],
-                    index=["input", "parse", "extract", "transform", "compare", "review", "merge", "export"].index(node["type"])
-                    if node["type"] in ["input", "parse", "extract", "transform", "compare", "review", "merge", "export"] else 0,
-                    key=f"node_type_{pipeline['id']}_{idx}",
-                    label_visibility="collapsed",
-                )
-            with d:
-                st.write(node.get("status", "idle"))
+        if st.button("🗂️ 重新整理送件文件", type="primary", key="run_stage3"):
+            try:
+                run_stage3()
+            except Exception as exc:
+                st.error(f"Stage 3 失敗：{exc}")
+                log_event(f"Stage 3 error: {exc}")
 
-        add_col, validate_col, save_col = st.columns(3)
-        with add_col:
-            if st.button("＋ Add node", use_container_width=True):
-                pipeline["nodes"].append(
+        if b["stage3_result"]:
+            try:
+                parsed3 = json.loads(b["stage3_result"])
+            except Exception:
+                parsed3 = {}
+
+            st.markdown("### 📋 送件文件對照總表")
+            render_markdown_table(
+                b["stage3_docs"],
+                ["title", "category", "doc_name", "comments"],
+            )
+
+            gaps = parsed3.get("gaps", [])
+            if gaps:
+                st.markdown("### ⚠️ AI identified gaps")
+                for item in gaps:
+                    st.warning(str(item))
+
+            st.download_button(
+                "📥 Download Stage 3 JSON",
+                data=b["stage3_result"],
+                file_name="stage3_submission_document_mapping.json",
+                mime="application/json",
+                key="dl_stage3",
+            )
+
+    # ---------------- Stage 4 ----------------
+    with tabs[3]:
+        st.markdown(stage_badge(4, "Comprehensive Review Guidance", completion["Stage 4"]), unsafe_allow_html=True)
+        st.info("Stage 4 會綜合 Stage 1–3，並搜尋 FDA / TFDA 公開資料，特別檢查「醫療器材許可證核發與登錄及年度申報準則」。")
+
+        ready4 = all(
+            [
+                bool(b["stage1_result"]),
+                bool(b["stage2_result"]),
+                bool(b["stage3_result"]),
+            ]
+        )
+        if not ready4:
+            st.warning("請先完成 Stage 1、Stage 2、Stage 3。")
+
+        if st.button("📚 建立綜合審查指引", type="primary", disabled=not ready4, key="run_stage4"):
+            try:
+                run_stage4()
+            except Exception as exc:
+                st.error(f"Stage 4 失敗：{exc}")
+                log_event(f"Stage 4 error: {exc}")
+
+        if b["stage4_result"]:
+            st.markdown(b["stage4_result"])
+            st.download_button(
+                "📥 Download Stage 4 Markdown",
+                data=b["stage4_result"],
+                file_name="stage4_comprehensive_review_guidance.md",
+                mime="text/markdown",
+                key="dl_stage4",
+            )
+
+    # ---------------- Stage 5 ----------------
+    with tabs[4]:
+        st.markdown(stage_badge(5, "30 Questions + Reviewer Feedback + Final Report", completion["Stage 5"]), unsafe_allow_html=True)
+
+        ready5 = bool(b["stage4_result"])
+        if st.button("❓ 產生 30 題綜合審查問題與答案", type="primary", disabled=not ready5, key="run_questions"):
+            try:
+                run_stage5_questions()
+            except Exception as exc:
+                st.error(f"Stage 5 問題產生失敗：{exc}")
+                log_event(f"Stage 5 question error: {exc}")
+
+        if b["stage5_questions"]:
+            st.markdown("### 30 題綜合審查問題")
+            for i, q in enumerate(b["stage5_questions"], 1):
+                qid = q.get("id", i)
+                st.markdown(f"#### Q{qid}. {q.get('question', '')}")
+                st.write(f"**分類：** {q.get('category', '')}")
+                st.write(f"**答案：** {q.get('answer', '')}")
+                if q.get("evidence"):
+                    st.caption(f"Evidence: {q.get('evidence')}")
+                if q.get("reviewer_focus"):
+                    st.caption(f"Reviewer focus: {q.get('reviewer_focus')}")
+
+            st.markdown("### 📝 Reviewer Feedback（可選）")
+            b["stage5_feedback"] = st.text_area(
+                "請針對答案提供修正、補充、不同意見或要求重新核對的項目",
+                value=b["stage5_feedback"],
+                height=220,
+                placeholder="例如：Q7 的附件名稱應以 IFU Rev. C 為準；Q18 請重新確認 FDA product code；……",
+                key="stage5_feedback_widget",
+            )
+
+            if st.button("📑 產生 5,000–6,000 字綜合審查報告", type="primary", key="run_final"):
+                try:
+                    run_final_report()
+                except Exception as exc:
+                    st.error(f"最終報告產生失敗：{exc}")
+                    log_event(f"Final report error: {exc}")
+
+        if b["stage5_report"]:
+            st.markdown("---")
+            st.markdown("## 📘 綜合審查報告")
+            st.markdown(b["stage5_report"])
+            st.download_button(
+                "📥 Download Final Review Report",
+                data=b["stage5_report"],
+                file_name="stage5_comprehensive_review_report.md",
+                mime="text/markdown",
+                key="dl_final",
+            )
+
+
+# ============================================================
+# 11. MODULE: SKILL STUDIO
+# ============================================================
+elif nav_choice == L10N["nav_skill_studio"]:
+    st.subheader("🧪 Skill Studio")
+    st.write("管理 Stage 1–5 使用的技能提示與未來可擴充的 reviewer skills。")
+
+    tab1, tab2 = st.tabs(["Skills", "Create Skill"])
+    with tab1:
+        st.dataframe(st.session_state.skills, use_container_width=True, hide_index=True)
+
+    with tab2:
+        name = st.text_input("Skill name")
+        description = st.text_area("Description")
+        if st.button("Create Skill"):
+            if require_input(name, "Skill name"):
+                st.session_state.skills.append(
                     {
-                        "id": f"n{len(pipeline['nodes'])+1}",
-                        "label": "New node",
-                        "type": "transform",
-                        "status": "idle",
+                        "id": f"SKILL-{len(st.session_state.skills)+1:03d}",
+                        "name": name,
+                        "model": st.session_state.active_model,
+                        "description": description,
                     }
                 )
-                pipeline["updated_at"] = now_iso()
-                st.rerun()
-        with validate_col:
-            if st.button("Validate", use_container_width=True):
-                issues = validate_pipeline(pipeline)
-                if issues:
-                    for issue in issues:
-                        st.error(issue)
-                    add_log(f"Pipeline validation failed: {len(issues)} issue(s).", "ERROR", "pipeline")
-                else:
-                    st.success("Pipeline valid.")
-                    add_log("Pipeline validation passed.", "INFO", "pipeline")
-        with save_col:
-            if st.button("Save pipeline", type="primary", use_container_width=True):
-                pipeline["updated_at"] = now_iso()
-                save_artifact("pipeline", pipeline["name"], pipeline)
-                add_log(f"Pipeline saved: {pipeline['name']}", "INFO", "pipeline")
-                set_flash("Pipeline saved.")
-                st.rerun()
-
-    st.divider()
-    st.subheader("Pipeline Galaxy")
-
-    positions_nodes = [
-        {
-            "id": n["id"],
-            "label": n["label"],
-            "active": n.get("status") == "running",
-            "size": .48 + (0.12 if n.get("status") == "complete" else 0),
-        }
-        for n in pipeline["nodes"]
-    ]
-    webgl_scene(
-        "Pipeline Galaxy",
-        positions_nodes,
-        [tuple(e) for e in pipeline["edges"]],
-        height=450,
-        scene_type="pipeline",
-    )
-
-    input_text = st.text_area(
-        "Pipeline input",
-        value="",
-        height=140,
-        placeholder="Enter or paste evidence to run through the pipeline.",
-    )
-
-    if st.button("▶ Run pipeline", type="primary"):
-        issues = validate_pipeline(pipeline)
-        if issues:
-            for issue in issues:
-                st.error(issue)
-        elif not input_text.strip():
-            st.warning("Provide pipeline input first.")
-        else:
-            run_pipeline(pipeline, input_text)
-            st.rerun()
-
-    run = st.session_state.get("pipeline_run", {})
-    if run:
-        st.subheader("Run outputs")
-        st.json(run)
-
-
-# =============================================================================
-# Agent Studio
-# =============================================================================
-
-def parse_yaml(text: str) -> Tuple[Any, Optional[str]]:
-    try:
-        import yaml  # type: ignore
-        return yaml.safe_load(text), None
-    except ImportError:
-        return None, "PyYAML is not installed."
-    except Exception as exc:
-        return None, str(exc)
-
-
-def normalize_yaml(text: str) -> str:
-    data, error = parse_yaml(text)
-    if error:
-        raise ValueError(error)
-    try:
-        import yaml  # type: ignore
-        return yaml.safe_dump(
-            data,
-            allow_unicode=True,
-            sort_keys=False,
-            default_flow_style=False,
-        )
-    except Exception as exc:
-        raise ValueError(str(exc)) from exc
-
-
-def page_agents() -> None:
-    st.title(t("agents"))
-    st.caption("Normalize, validate, diff, and export agent YAML and SKILL.md assets.")
-
-    yaml_upload = st.file_uploader("Upload agents.yaml", type=["yaml", "yml"])
-    skill_upload = st.file_uploader("Upload SKILL.md", type=["md"])
-
-    if yaml_upload:
-        st.session_state["agent_yaml"] = yaml_upload.getvalue().decode("utf-8", errors="replace")
-    if skill_upload:
-        st.session_state["agent_skill_md"] = skill_upload.getvalue().decode("utf-8", errors="replace")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.session_state["agent_yaml"] = st.text_area(
-            "agents.yaml",
-            value=st.session_state.get("agent_yaml", ""),
-            height=420,
-        )
-    with c2:
-        st.session_state["agent_skill_md"] = st.text_area(
-            "SKILL.md",
-            value=st.session_state.get("agent_skill_md", ""),
-            height=420,
-        )
-
-    a, b, c = st.columns(3)
-    with a:
-        if st.button("Validate YAML", use_container_width=True):
-            data, error = parse_yaml(st.session_state["agent_yaml"])
-            if error:
-                st.session_state["agent_validation"] = [error]
-                add_log("Agent YAML validation failed.", "ERROR", "agents")
-            else:
-                issues = []
-                if not isinstance(data, (dict, list)):
-                    issues.append("Root YAML structure should be a mapping or list.")
-                st.session_state["agent_validation"] = issues
-                add_log("Agent YAML validation passed.", "INFO", "agents")
-    with b:
-        if st.button("Standardize YAML", use_container_width=True):
-            try:
-                st.session_state["agent_yaml"] = normalize_yaml(st.session_state["agent_yaml"])
-                add_log("Agent YAML standardized.", "INFO", "agents")
-                set_flash("YAML standardized.")
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
-    with c:
-        if st.button("Export agent bundle", use_container_width=True):
-            bundle = {
-                "agents.yaml": st.session_state["agent_yaml"],
-                "SKILL.md": st.session_state["agent_skill_md"],
-                "exported_at": now_iso(),
-            }
-            save_artifact("agent_bundle", "Agent Bundle", bundle)
-            st.download_button(
-                "Download bundle JSON",
-                data=json.dumps(bundle, ensure_ascii=False, indent=2),
-                file_name="agent_bundle.json",
-                mime="application/json",
-                key="agent_bundle_download",
-            )
-
-    if st.session_state["agent_validation"]:
-        for issue in st.session_state["agent_validation"]:
-            st.error(issue)
-    else:
-        if st.session_state["agent_yaml"].strip():
-            st.success("No recorded validation errors.")
-
-
-# =============================================================================
-# Results Library
-# =============================================================================
-
-def page_results() -> None:
-    st.title(t("results"))
-    st.caption("Portable, traceable workspace artifacts.")
-
-    if not st.session_state["artifacts"]:
-        st.info("No artifacts yet. Save a note, skill, pipeline, review, or comparison.")
-        return
-
-    kinds = sorted(set(a["kind"] for a in st.session_state["artifacts"]))
-    selected_kind = st.selectbox("Filter", ["All"] + kinds)
-
-    items = st.session_state["artifacts"]
-    if selected_kind != "All":
-        items = [a for a in items if a["kind"] == selected_kind]
-
-    for artifact in items:
-        with st.expander(
-            f"{artifact['name']} · {artifact['kind']} · {artifact['created_at']}"
-        ):
-            st.caption(f"ID: {artifact['id']}")
-            content = artifact["content"]
-            if isinstance(content, (dict, list)):
-                st.json(content)
-            else:
-                st.markdown(safe_text(content)[:12000])
-
-            st.download_button(
-                "Download artifact",
-                data=artifact_bytes(artifact),
-                file_name=f"{artifact['name'].replace(' ','_')}.{ 'json' if isinstance(content,(dict,list)) else 'md' }",
-                mime="application/json" if isinstance(content, (dict,list)) else "text/markdown",
-                key=f"artifact_dl_{artifact['id']}",
-            )
-
-
-# =============================================================================
-# Visualization hub
-# =============================================================================
-
-def page_visuals() -> None:
-    st.title(t("visuals"))
-    st.caption("Interactive WebGL scenes backed by the current workspace state.")
-
-    scene = st.selectbox(
-        "Scene",
-        [
-            "Evidence Constellation",
-            "Skill Arena",
-            "Pipeline Galaxy",
-            "Conflict Prism",
-        ],
-    )
-
-    if scene == "Evidence Constellation":
-        nodes = [
-            {"id": "case", "label": "Case", "size": .75, "active": True},
-            {"id": "doc1", "label": "Document A", "size": .52},
-            {"id": "doc2", "label": "Document B", "size": .52},
-            {"id": "claim", "label": "Claim", "size": .60},
-            {"id": "test", "label": "Test", "size": .55},
-            {"id": "output", "label": "Report", "size": .65},
-        ]
-        edges = [
-            ("case", "doc1"), ("case", "doc2"), ("doc1", "claim"),
-            ("doc2", "claim"), ("claim", "test"), ("test", "output"),
-        ]
-        webgl_scene(scene, nodes, edges, height=570)
-
-    elif scene == "Skill Arena":
-        cmp = st.session_state["comparison"]
-        nodes = [
-            {"id": "A", "label": "A", "active": bool(cmp.get("output_a")), "size": .7},
-            {"id": "B", "label": "B", "active": bool(cmp.get("output_b")), "size": .7},
-            {"id": "C", "label": "C Review", "active": bool(cmp.get("review_c")), "size": .8},
-        ]
-        webgl_scene(scene, nodes, [("A", "C"), ("B", "C")], height=570)
-
-    elif scene == "Pipeline Galaxy":
-        p = current_pipeline()
-        nodes = [
-            {
-                "id": n["id"],
-                "label": n["label"],
-                "active": n.get("status") == "running",
-                "size": .5,
-            }
-            for n in p["nodes"]
-        ]
-        webgl_scene(scene, nodes, [tuple(e) for e in p["edges"]], height=570)
-
-    else:
-        nodes = [
-            {"id": "spec", "label": "Specification", "size": .68},
-            {"id": "label", "label": "Label", "size": .55},
-            {"id": "ifus", "label": "IFU", "size": .55},
-            {"id": "test", "label": "Test Evidence", "size": .60},
-            {"id": "conflict", "label": "Conflict", "size": .78, "active": True},
-        ]
-        webgl_scene(
-            scene,
-            nodes,
-            [("spec", "conflict"), ("label", "conflict"), ("ifus", "conflict"), ("test", "conflict")],
-            height=570,
-        )
-
-
-# =============================================================================
-# Settings & security
-# =============================================================================
-
-def page_settings() -> None:
-    st.title(t("settings"))
-
-    st.subheader("Language")
-    language_label = st.selectbox(
-        "UI language",
-        list(LANGUAGES.keys()),
-        index=list(LANGUAGES.values()).index(st.session_state["language"]),
-    )
-    st.session_state["language"] = LANGUAGES[language_label]
-
-    st.subheader("Theme")
-    theme = st.selectbox(
-        "Theme",
-        list(THEMES.keys()),
-        index=list(THEMES.keys()).index(st.session_state["theme"])
-        if st.session_state["theme"] in THEMES else 0,
-    )
-    st.session_state["theme"] = theme
-    st.session_state["reduced_motion"] = st.checkbox(
-        "Reduced motion",
-        value=st.session_state.get("reduced_motion", False),
-    )
-
-    st.subheader("Model")
-    st.session_state["global_model"] = st.selectbox(
-        "Global default model",
-        list(MODELS.keys()),
-        index=list(MODELS.keys()).index(st.session_state["global_model"])
-        if st.session_state["global_model"] in MODELS else 0,
-    )
-
-    st.subheader("Providers & secure session keys")
-    st.caption("Environment variables take precedence over session-entered keys. Keys are never written to artifacts or logs.")
-
-    for provider, cfg in PROVIDERS.items():
-        status = provider_key_status(provider)
-        cols = st.columns([1.2, 2.4, 1.2])
-        with cols[0]:
-            st.write(f"**{provider}**")
-        with cols[1]:
-            st.caption(
-                "Environment configured"
-                if status["environment"]
-                else ("Session configured" if status["session"] else "Not configured")
-            )
-        with cols[2]:
-            if status["configured"]:
-                st.success("Ready", icon="●")
-            else:
-                st.warning("Fallback", icon="○")
-
-        if not status["environment"]:
-            st.session_state[cfg["session_key"]] = st.text_input(
-                f"{provider} API key",
-                value=st.session_state.get(cfg["session_key"], ""),
-                type="password",
-                key=f"key_input_{provider}",
-            )
-
-    st.session_state["active_provider"] = st.selectbox(
-        "Active provider",
-        list(PROVIDERS.keys()),
-        index=list(PROVIDERS.keys()).index(st.session_state["active_provider"]),
-    )
-
-    st.divider()
-    st.subheader("Workspace export / import")
-
-    workspace = {
-        "version": 1,
-        "exported_at": now_iso(),
-        "language": st.session_state["language"],
-        "theme": st.session_state["theme"],
-        "global_model": st.session_state["global_model"],
-        "notes": st.session_state["notes"],
-        "review": st.session_state["review"],
-        "skills": st.session_state["skills"],
-        "comparison": st.session_state["comparison"],
-        "pipelines": st.session_state["pipelines"],
-        "agent_yaml": st.session_state["agent_yaml"],
-        "agent_skill_md": st.session_state["agent_skill_md"],
-        "artifacts": st.session_state["artifacts"],
-    }
+                st.success("Skill created.")
 
     st.download_button(
-        "Download workspace snapshot",
-        data=json.dumps(workspace, ensure_ascii=False, indent=2),
-        file_name="workbench_workspace.json",
+        "📥 Download skills.json",
+        data=safe_json(st.session_state.skills),
+        file_name="skills.json",
         mime="application/json",
+    )
+
+
+# ============================================================
+# 12. MODULE: PIPELINE STUDIO
+# ============================================================
+elif nav_choice == L10N["nav_pipeline"]:
+    st.subheader("🧬 Pipeline Studio")
+    for pipe in st.session_state.pipelines:
+        st.markdown(f"### {pipe['name']}")
+        st.dataframe(pipe["nodes"], use_container_width=True, hide_index=True)
+
+    if st.button("➕ Add Review Node"):
+        nodes = st.session_state.pipelines[0]["nodes"]
+        nodes.append(
+            {
+                "step": len(nodes) + 1,
+                "name": "Custom reviewer step",
+                "status": "Custom",
+            }
+        )
+        st.rerun()
+
+    st.download_button(
+        "📥 Download pipeline.json",
+        data=safe_json(st.session_state.pipelines),
+        file_name="pipeline.json",
+        mime="application/json",
+    )
+
+
+# ============================================================
+# 13. MODULE: AGENT STUDIO
+# ============================================================
+elif nav_choice == L10N["nav_agents"]:
+    st.subheader("🤖 Agent Studio")
+    if yaml is None:
+        st.warning("PyYAML 未安裝。requirements.txt 請加入 PyYAML。")
+    else:
+        yaml_text = yaml.safe_dump(st.session_state.agents, allow_unicode=True, sort_keys=False)
+        edited = st.text_area("agents.yaml", yaml_text, height=300)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🧹 Validate YAML"):
+                try:
+                    parsed = yaml.safe_load(edited)
+                    if not isinstance(parsed, list):
+                        raise ValueError("agents.yaml 頂層必須是 list。")
+                    st.session_state.agents = parsed
+                    st.success("YAML valid and saved.")
+                except Exception as exc:
+                    st.error(f"YAML error: {exc}")
+        with c2:
+            st.download_button(
+                "📥 Download agents.yaml",
+                data=edited,
+                file_name="agents.yaml",
+                mime="text/yaml",
+            )
+
+
+# ============================================================
+# 14. MODULE: AI UTILITIES
+# ============================================================
+elif nav_choice == L10N["nav_wow_ai"]:
+    st.subheader("🚀 AI Regulatory Utilities")
+
+    t1, t2, t3 = st.tabs(["Evidence consistency", "Gap checklist", "Prompt inspector"])
+
+    with t1:
+        st.write("快速檢查 Stage 1–3 是否都有結果，並顯示跨階段可用性。")
+        checks = [
+            ("Stage 1 FDA evidence", bool(b["stage1_result"])),
+            ("Stage 2 IFU evidence", bool(b["stage2_result"])),
+            ("Stage 3 submission evidence", bool(b["stage3_result"])),
+            ("Stage 4 guidance", bool(b["stage4_result"])),
+            ("Stage 5 questions", bool(b["stage5_questions"])),
+            ("Final report", bool(b["stage5_report"])),
+        ]
+        st.dataframe(
+            [{"Evidence": x, "Available": "Yes" if ok else "No"} for x, ok in checks],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with t2:
+        st.markdown(
+            """
+            **Reviewer checklist**
+            - 裝置名稱、型號、版本與 IFU 是否一致？
+            - Intended use / indication 是否一致？
+            - FDA product code / classification 是否有來源？
+            - 510(k) candidate 是否真的可由來源支持？
+            - 主機與附件規格是否完整？
+            - 軟體版本與 AI 功能是否在文件中明載？
+            - Safety / performance evidence 是否與宣稱一致？
+            - Label / IFU / submission documents 是否一致？
+            - 台灣法規與年度申報要求是否以現行官方資料確認？
+            - 所有 AI inference 是否與 source evidence 清楚區隔？
+            """
+        )
+
+    with t3:
+        st.code(
+            "\n\n".join(
+                [
+                    "STAGE1_PROMPT",
+                    "STAGE2_PROMPT",
+                    "STAGE3_PROMPT",
+                    "STAGE4_PROMPT",
+                    "STAGE5_PROMPT",
+                    "FINAL_REPORT_PROMPT",
+                ]
+            ),
+            language="text",
+        )
+
+
+# ============================================================
+# 15. MODULE: RESULTS LIBRARY
+# ============================================================
+elif nav_choice == L10N["nav_results"]:
+    st.subheader("📁 Results Library")
+    if not st.session_state.results:
+        st.info("尚無結果。完成 Stage 1–5 後會自動保存。")
+    else:
+        for i, item in enumerate(st.session_state.results):
+            with st.expander(f"{item['timestamp']} · {item['title']}"):
+                st.markdown(item["body"])
+                st.download_button(
+                    "Download",
+                    data=item["body"],
+                    file_name=f"result_{i+1}.md",
+                    mime="text/markdown",
+                    key=f"download_result_{i}",
+                )
+
+    st.download_button(
+        "📦 Download all results as JSON",
+        data=safe_json(st.session_state.results),
+        file_name="review_results.json",
+        mime="application/json",
+    )
+
+
+# ============================================================
+# 16. MODULE: SETTINGS
+# ============================================================
+elif nav_choice == L10N["nav_settings"]:
+    st.subheader("⚙️ System Settings & Security")
+    st.write(f"**UI language:** {st.session_state.language}")
+    st.write(f"**Theme:** {st.session_state.theme_name} / {st.session_state.theme_mode}")
+    st.write(f"**Model:** {st.session_state.active_model}")
+    st.write(f"**Gemini API key:** {'Configured' if st.session_state.api_key else 'Missing'}")
+    st.write("**Web search:** Gemini Google Search grounding for Stage 1 and Stage 4")
+    st.write("**File support:** PDF/TXT/MD/CSV/DOCX (parser availability depends on requirements.txt)")
+
+    st.markdown("### Environment check")
+    st.dataframe(
+        [
+            {"Component": "streamlit", "Status": "Loaded"},
+            {"Component": "google-genai", "Status": "Loaded" if genai else "Missing"},
+            {"Component": "pypdf", "Status": "Loaded" if PdfReader else "Missing"},
+            {"Component": "PyYAML", "Status": "Loaded" if yaml else "Missing"},
+            {"Component": "GEMINI_API_KEY", "Status": "Configured" if st.session_state.api_key else "Missing"},
+        ],
         use_container_width=True,
+        hide_index=True,
     )
 
-    uploaded = st.file_uploader(
-        "Import workspace snapshot",
+    st.markdown("### Export / import session data")
+    export_state = {
+        "version": APP_VERSION,
+        "language": st.session_state.language,
+        "theme_name": st.session_state.theme_name,
+        "theme_mode": st.session_state.theme_mode,
+        "active_model": st.session_state.active_model,
+        "bench": st.session_state.bench,
+        "skills": st.session_state.skills,
+        "pipelines": st.session_state.pipelines,
+        "agents": st.session_state.agents,
+    }
+    st.download_button(
+        "📤 Export Review Session JSON",
+        data=safe_json(export_state),
+        file_name="medical_device_review_session.json",
+        mime="application/json",
+    )
+
+    uploaded_session = st.file_uploader(
+        "Import Review Session JSON",
         type=["json"],
-        key="workspace_import",
+        key="session_import",
     )
-    if uploaded and st.button("Validate & import workspace", use_container_width=True):
+    if uploaded_session and st.button("Import Session", key="import_session"):
         try:
-            incoming = json.loads(uploaded.getvalue().decode("utf-8"))
-            required = ["version", "notes", "skills", "pipelines", "artifacts"]
-            missing = [k for k in required if k not in incoming]
-            if missing:
-                raise ValueError(f"Missing required workspace fields: {missing}")
-
-            # Apply only known safe workspace fields.
-            for key in [
-                "language", "theme", "global_model", "notes", "review",
-                "skills", "comparison", "pipelines", "agent_yaml",
-                "agent_skill_md", "artifacts",
-            ]:
-                if key in incoming:
-                    st.session_state[key] = incoming[key]
-
-            add_log("Workspace snapshot imported.", "INFO", "workspace")
-            set_flash("Workspace imported.")
+            imported = json.loads(uploaded_session.getvalue().decode("utf-8"))
+            for key in ["language", "theme_name", "theme_mode", "active_model", "bench", "skills", "pipelines", "agents"]:
+                if key in imported:
+                    st.session_state[key] = imported[key]
+            st.success("Session imported. 請重新確認 API Key。")
             st.rerun()
         except Exception as exc:
-            add_log(f"Workspace import rejected: {exc}", "ERROR", "workspace")
-            st.error(f"Import rejected: {exc}")
+            st.error(f"Import failed: {exc}")
+
+    st.divider()
+    if st.button("🗑️ Clear review session", type="secondary"):
+        keys_to_clear = [
+            "bench", "results", "notes", "token_count", "logs"
+        ]
+        for key in keys_to_clear:
+            st.session_state.pop(key, None)
+        st.rerun()
 
 
-# =============================================================================
-# Router
-# =============================================================================
+# ============================================================
+# 17. FOOTER / OPERATIONAL HUD
+# ============================================================
+with st.expander("⚡ Operational HUD", expanded=False):
+    st.write(f"**Active model:** {st.session_state.active_model}")
+    st.write(f"**Estimated token usage:** {st.session_state.token_count:,}")
+    st.write(f"**Skills:** {len(st.session_state.skills)} · **Pipelines:** {len(st.session_state.pipelines)}")
+    st.write("**Latest logs:**")
+    for line in st.session_state.logs[-8:]:
+        st.caption(line)
 
-def render_page() -> None:
-    page = st.session_state.get("page", "home")
-    if page == "home":
-        page_home()
-    elif page == "notes":
-        page_notes()
-    elif page == "review":
-        page_review()
-    elif page == "skills":
-        page_skills()
-    elif page == "pipeline":
-        page_pipeline()
-    elif page == "agents":
-        page_agents()
-    elif page == "results":
-        page_results()
-    elif page == "visuals":
-        page_visuals()
-    elif page == "settings":
-        page_settings()
-    else:
-        st.session_state["page"] = "home"
-        page_home()
-
-
-# =============================================================================
-# Main
-# =============================================================================
-
-def main() -> None:
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="◈",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
-
-    init_state()
-    inject_css()
-    render_sidebar()
-    render_topbar()
-    render_flash()
-    render_page()
-    render_dashboard()
-
-
-if __name__ == "__main__":
-    main()
+st.caption(
+    "⚠️ 此工具用於法規情報整理與文件審查輔助；AI 輸出不構成 FDA、TFDA 或其他主管機關的正式核准、分類或法規決定。"
+)

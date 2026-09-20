@@ -107,7 +107,7 @@ def init_state() -> None:
         "language": "繁體中文",
         "theme_name": "Coral Pulse",
         "theme_mode": "Dark",
-        "active_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        "active_model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
         "api_key": os.getenv("GEMINI_API_KEY", ""),
         "token_count": 0,
         "logs": [],
@@ -833,9 +833,9 @@ with st.sidebar:
     L10N = LOCALIZATIONS[st.session_state.language]
 
     model_options = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
+        "gemini-3.5-flash-lite",
+        "gemma-4-31b-it",
+        "gemma-4-26b-14b-it",
     ]
     current_model = st.session_state.active_model
     if current_model not in model_options:
